@@ -1,0 +1,28 @@
+# systemd unit for the market-data recorder.
+#   sudo cp recorder.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now recorder
+#   journalctl -u recorder -f        # counts and states only, never prices
+[Unit]
+Description=AstraConnect market-data recorder (sealed holdout)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=acrec
+WorkingDirectory=/opt/acrec
+ExecStart=/opt/acrec/recorder /opt/acrec/recorder.json
+Restart=always
+RestartSec=5
+# SIGTERM -> clean stop: frames ended, every .part renamed
+KillSignal=SIGTERM
+TimeoutStopSec=60
+# The recorder never deletes data; it only needs write access to its data root.
+ReadWritePaths=/data/acrec
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

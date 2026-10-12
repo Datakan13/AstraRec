@@ -1,0 +1,206 @@
+{
+ "timezone": "UTC",
+ "serverTime": 1793491200000,
+ "futuresType": "U_MARGINED",
+ "rateLimits": [],
+ "exchangeFilters": [],
+ "assets": [],
+ "symbols": [
+  {
+   "symbol": "BTCUSDT",
+   "pair": "BTCUSDT",
+   "contractType": "PERPETUAL",
+   "status": "TRADING",
+   "baseAsset": "BTC",
+   "quoteAsset": "USDT",
+   "marginAsset": "USDT",
+   "underlyingType": "COIN",
+   "filters": [
+    {
+     "filterType": "PRICE_FILTER",
+     "tickSize": "0.10",
+     "minPrice": "0.10",
+     "maxPrice": "1000000"
+    },
+    {
+     "filterType": "LOT_SIZE",
+     "stepSize": "0.001",
+     "minQty": "0.001",
+     "maxQty": "1000"
+    },
+    {
+     "filterType": "MIN_NOTIONAL",
+     "notional": "5"
+    }
+   ]
+  },
+  {
+   "symbol": "ETHUSDT",
+   "pair": "ETHUSDT",
+   "contractType": "PERPETUAL",
+   "status": "TRADING",
+   "baseAsset": "ETH",
+   "quoteAsset": "USDT",
+   "marginAsset": "USDT",
+   "underlyingType": "COIN",
+   "filters": [
+    {
+     "filterType": "PRICE_FILTER",
+     "tickSize": "0.01",
+     "minPrice": "0.01",
+     "maxPrice": "1000000"
+    },
+    {
+     "filterType": "LOT_SIZE",
+     "stepSize": "0.001",
+     "minQty": "0.001",
+     "maxQty": "1000"
+    },
+    {
+     "filterType": "MIN_NOTIONAL",
+     "notional": "5"
+    }
+   ]
+  },
+  {
+   "symbol": "1000PEPEUSDC",
+   "pair": "1000PEPEUSDC",
+   "contractType": "PERPETUAL",
+   "status": "TRADING",
+   "baseAsset": "1000PEPE",
+   "quoteAsset": "USDC",
+   "marginAsset": "USDC",
+   "underlyingType": "COIN",
+   "filters": [
+    {
+     "filterType": "PRICE_FILTER",
+     "tickSize": "0.0000001",
+     "minPrice": "0.0000001",
+     "maxPrice": "1000000"
+    },
+    {
+     "filterType": "LOT_SIZE",
+     "stepSize": "1",
+     "minQty": "1",
+     "maxQty": "1000"
+    },
+    {
+     "filterType": "MIN_NOTIONAL",
+     "notional": "5"
+    }
+   ]
+  },
+  {
+   "symbol": "SOLUSDT",
+   "pair": "SOLUSDT",
+   "contractType": "PERPETUAL",
+   "status": "TRADING",
+   "baseAsset": "SOL",
+   "quoteAsset": "USDT",
+   "marginAsset": "USDT",
+   "underlyingType": "COIN",
+   "filters": [
+    {
+     "filterType": "PRICE_FILTER",
+     "tickSize": "0.0100",
+     "minPrice": "0.0100",
+     "maxPrice": "1000000"
+    },
+    {
+     "filterType": "LOT_SIZE",
+     "stepSize": "1",
+     "minQty": "1",
+     "maxQty": "1000"
+    },
+    {
+     "filterType": "MIN_NOTIONAL",
+     "notional": "5"
+    }
+   ]
+  },
+  {
+   "symbol": "XAUUSDT",
+   "pair": "XAUUSDT",
+   "contractType": "TRADIFI_PERPETUAL",
+   "status": "TRADING",
+   "baseAsset": "XAU",
+   "quoteAsset": "USDT",
+   "marginAsset": "USDT",
+   "underlyingType": "COIN",
+   "filters": [
+    {
+     "filterType": "PRICE_FILTER",
+     "tickSize": "0.01",
+     "minPrice": "0.01",
+     "maxPrice": "1000000"
+    },
+    {
+     "filterType": "LOT_SIZE",
+     "stepSize": "0.001",
+     "minQty": "0.001",
+     "maxQty": "1000"
+    },
+    {
+     "filterType": "MIN_NOTIONAL",
+     "notional": "5"
+    }
+   ]
+  },
+  {
+   "symbol": "OLDUSDT",
+   "pair": "OLDUSDT",
+   "contractType": "PERPETUAL",
+   "status": "SETTLING",
+   "baseAsset": "OLD",
+   "quoteAsset": "USDT",
+   "marginAsset": "USDT",
+   "underlyingType": "COIN",
+   "filters": [
+    {
+     "filterType": "PRICE_FILTER",
+     "tickSize": "0.001",
+     "minPrice": "0.001",
+     "maxPrice": "1000000"
+    },
+    {
+     "filterType": "LOT_SIZE",
+     "stepSize": "1",
+     "minQty": "1",
+     "maxQty": "1000"
+    },
+    {
+     "filterType": "MIN_NOTIONAL",
+     "notional": "5"
+    }
+   ]
+  },
+  {
+   "symbol": "BTCUSDT_261225",
+   "pair": "BTCUSDT_261225",
+   "contractType": "CURRENT_QUARTER",
+   "status": "TRADING",
+   "baseAsset": "BTCUSDT_26",
+   "quoteAsset": "USDT",
+   "marginAsset": "USDT",
+   "underlyingType": "COIN",
+   "filters": [
+    {
+     "filterType": "PRICE_FILTER",
+     "tickSize": "0.10",
+     "minPrice": "0.10",
+     "maxPrice": "1000000"
+    },
+    {
+     "filterType": "LOT_SIZE",
+     "stepSize": "0.001",
+     "minQty": "0.001",
+     "maxQty": "1000"
+    },
+    {
+     "filterType": "MIN_NOTIONAL",
+     "notional": "5"
+    }
+   ]
+  }
+ ]
+}
