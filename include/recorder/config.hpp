@@ -19,6 +19,7 @@ struct RecorderConfig {
   int params_per_subscribe = 100;          // streams per SUBSCRIBE message
   int zstd_level = 3;
   int frame_interval_s = 60;
+  int segment_minutes = 0;                 // >0: new segment file every N minutes (enables intra-day upload)
   int exchange_info_interval_s = 3600;
   int clock_sync_interval_s = 600;
   int depth_refresh_minute_utc = 5;        // daily at 00:05 UTC

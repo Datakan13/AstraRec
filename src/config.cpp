@@ -54,6 +54,7 @@ bool load_recorder_config(const std::string& path, RecorderConfig& c, std::strin
       {"depth_top_usdt", &c.depth_top_usdt}, {"streams_per_connection", &c.streams_per_connection},
       {"subscribe_msgs_per_sec", &c.subscribe_msgs_per_sec}, {"params_per_subscribe", &c.params_per_subscribe},
       {"zstd_level", &c.zstd_level}, {"frame_interval_s", &c.frame_interval_s},
+      {"segment_minutes", &c.segment_minutes},
       {"exchange_info_interval_s", &c.exchange_info_interval_s}, {"clock_sync_interval_s", &c.clock_sync_interval_s},
       {"depth_refresh_minute_utc", &c.depth_refresh_minute_utc}, {"rotate_after_s", &c.rotate_after_s},
       {"rotate_stagger_s", &c.rotate_stagger_s}, {"rotation_warmup_s", &c.rotation_warmup_s},
@@ -85,11 +86,11 @@ bool load_recorder_config(const std::string& path, RecorderConfig& c, std::strin
     if (!ok) { err = path + ": bad value for '" + std::string(key) + "'"; return false; }
   }
   if (c.root.empty() || c.streams_per_connection < 1 || c.streams_per_connection > 1024 || c.subscribe_msgs_per_sec < 1 ||
-      c.subscribe_msgs_per_sec > 9 || c.params_per_subscribe < 1 || c.frame_interval_s < 1 || c.frame_interval_s > 60 ||
+      c.subscribe_msgs_per_sec > 9 || c.params_per_subscribe < 1 || c.frame_interval_s < 1 || c.frame_interval_s > 60 || c.segment_minutes < 0 || c.segment_minutes > 1440 ||
       c.rotate_after_s < 600 || c.rotate_after_s >= 24 * 3600 || c.reconnect_max_s < 1 || c.zstd_level < 1 ||
       c.zstd_level > 19 || c.depth_top_usdt < 0) {
     err = path + ": a setting is out of range (streams_per_connection 1..1024, subscribe_msgs_per_sec 1..9, "
-                 "frame_interval_s 1..60, rotate_after_s 600..86399, zstd_level 1..19)";
+                 "frame_interval_s 1..60, segment_minutes 0..1440, rotate_after_s 600..86399, zstd_level 1..19)";
     return false;
   }
   return true;

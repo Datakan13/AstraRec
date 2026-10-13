@@ -72,7 +72,7 @@ int main(int argc, char** argv) {
   acrec::SymbolRegistry registry;
   acrec::Storage storage({cfg.root, cfg.zstd_level, RECORDER_VERSION}, registry);
   const auto recovered = storage.recover();
-  acrec::WriterCore writer(storage, registry, {cfg.frame_interval_s, cfg.day_close_grace_s});
+  acrec::WriterCore writer(storage, registry, {cfg.frame_interval_s, cfg.day_close_grace_s, cfg.segment_minutes});
   acrec::QueueSink sink(writer);
   sink.start();
   for (const auto& p : recovered) {

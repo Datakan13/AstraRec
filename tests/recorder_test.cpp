@@ -122,10 +122,11 @@ struct Rig {
   std::unique_ptr<Storage> storage;
   std::unique_ptr<WriterCore> writer;
   std::unique_ptr<MessageParser> parser;
-  explicit Rig(const std::string& root, std::vector<SymbolSpec> specs = {spec("BTCUSDT", "0.10", "0.001"), spec("ETHUSDT", "0.01", "0.001")}) {
+  explicit Rig(const std::string& root, std::vector<SymbolSpec> specs = {spec("BTCUSDT", "0.10", "0.001"), spec("ETHUSDT", "0.01", "0.001")},
+               WriterOptions wopt = {}) {
     registry.update(specs, kDay0 - 1000);
     storage = std::make_unique<Storage>(StorageOptions{root, 3, "test"}, registry);
-    writer = std::make_unique<WriterCore>(*storage, registry, WriterOptions{});
+    writer = std::make_unique<WriterCore>(*storage, registry, wopt);
     parser = std::make_unique<MessageParser>(registry);
   }
   ParseResult feed(const std::string& msg, uint32_t conn = 0) {
@@ -351,6 +352,51 @@ void test_parser_edges() {
   CHECK(r.kind == ParseResult::Kind::Error);
 }
 
+// segment_minutes: segments close at each slot boundary of exchange time, so finished
+// hours can be uploaded during the day; ids and sequences continue across files.
+void test_hourly_segments() {
+  const std::string root = temp_root("segments");
+  const std::string day = root + "/2026-11-01";
+  WriterOptions wo;
+  wo.segment_minutes = 60;
+  {
+    Rig rig(root, {spec("BTCUSDT", "0.10", "0.001"), spec("ETHUSDT", "0.01", "0.001")}, wo);
+    rig.feed(trade_msg("BTCUSDT", 1, kDay0 + 10));                  // 00:00
+    rig.writer->tick(0);
+    rig.feed(trade_msg("BTCUSDT", 2, kDay0 + 3599999));             // 00:59:59.999
+    rig.writer->tick(1);
+    CHECK(fs::exists(day + "/trades.000.bin.zst.part"));
+    rig.feed(trade_msg("BTCUSDT", 3, kDay0 + 3600000));             // 01:00: new hour
+    CHECK(fs::exists(day + "/trades.000.bin.zst"));                 // hour 0 finished, ready to upload
+    rig.feed(trade_msg("BTCUSDT", 4, kDay0 + 3600001));
+    rig.writer->tick(3);
+    CHECK(fs::exists(day + "/trades.001.bin.zst.part"));            // hour 1 still open
+    rig.feed(trade_msg("BTCUSDT", 5, kDay0 + 7200000));             // 02:00
+    rig.writer->tick(4);
+    CHECK(fs::exists(day + "/trades.001.bin.zst"));
+    rig.writer->finish();
+    CHECK(rig.writer->stats().gaps == 0);                           // ids continue across files
+  }
+  auto s0 = records<TradeRecord>(decode(day + "/trades.000.bin.zst"));
+  auto s1 = records<TradeRecord>(decode(day + "/trades.001.bin.zst"));
+  auto s2 = records<TradeRecord>(decode(day + "/trades.002.bin.zst"));
+  CHECK(s0.size() == 2 && s1.size() == 2 && s2.size() == 1);
+
+  // The uploader deletes uploaded segments and leaves "<name>.pruned" markers:
+  // a restart must continue after them, never reuse an uploaded number.
+  for (const char* f : {"trades.000.bin.zst", "trades.001.bin.zst", "trades.002.bin.zst"}) {
+    fs::remove(day + "/" + f);
+    std::ofstream(day + "/" + f + ".pruned");
+  }
+  {
+    Rig rig(root, {spec("BTCUSDT", "0.10", "0.001"), spec("ETHUSDT", "0.01", "0.001")}, wo);
+    rig.feed(trade_msg("BTCUSDT", 6, kDay0 + 7200001));
+    rig.writer->finish();
+  }
+  CHECK(fs::exists(day + "/trades.003.bin.zst"));
+  fs::remove_all(root);
+}
+
 }  // namespace
 
 int main() {
@@ -362,6 +408,7 @@ int main() {
   test_rotation_overlap();
   test_tick_change();
   test_restart_keeps_ids();
+  test_hourly_segments();
   if (failures) { std::cerr << failures << " check(s) failed\n"; return 1; }
   std::cout << "all recorder tests passed\n";
   return 0;

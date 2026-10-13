@@ -83,6 +83,15 @@ int segment_number(const std::string& name) {
   return n;
 }
 
+// Next free segment number in a day folder: never reuse or append to an existing
+// file. Counts .part, .crash and .pruned (uploaded, then deleted locally) names too.
+int next_segment(const std::string& dir) {
+  std::error_code ec;
+  int max_seg = -1;
+  for (const auto& f : fs::directory_iterator(dir, ec)) max_seg = std::max(max_seg, segment_number(f.path().filename().string()));
+  return max_seg + 1;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------- SegmentWriter
@@ -188,10 +197,7 @@ Storage::Day& Storage::day(int64_t d) {
   std::error_code ec;
   fs::create_directories(day->dir, ec);
   if (ec) fail("mkdir " + day->dir + ": " + ec.message());
-  // Next free segment number: never reuse or append to an existing file.
-  int max_seg = -1;
-  for (const auto& f : fs::directory_iterator(day->dir, ec)) max_seg = std::max(max_seg, segment_number(f.path().filename().string()));
-  day->segment = max_seg + 1;
+  day->segment = next_segment(day->dir);
   // A restart or a late record can reopen a day that already has a meta.json:
   // keep its ids so every segment of the day agrees.
   const std::string meta_path = (fs::path(day->dir) / "meta.json").string();
@@ -396,6 +402,22 @@ void Storage::close_days_before(int64_t day) {
   for (auto it = days_.begin(); it != days_.end() && it->first < day;) {
     close_day(*it->second);
     it = days_.erase(it);
+  }
+}
+
+void Storage::rotate_segments() {
+  for (auto& [_, d] : days_) {
+    bool closed = false;
+    for (auto& s : d->seg) {
+      if (!s) continue;
+      std::string err;
+      const uint64_t before = s->bytes_out();
+      if (!s->close(err)) fail(err);
+      bytes_[d->day] += s->bytes_out() - before;
+      s.reset();
+      closed = true;
+    }
+    if (closed) d->segment = next_segment(d->dir);
   }
 }
 

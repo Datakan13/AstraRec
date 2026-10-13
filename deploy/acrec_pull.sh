@@ -24,9 +24,9 @@ log "moving tars from $REMOTE"
 "$RCLONE" move "$REMOTE" "$DEST/incoming" --include '*.tar' --retries 5 --stats-one-line --stats 30s
 
 bad=0 ok=0
-# Name order: <day>_00.tar before <day>_01.tar, so later parts overwrite changed files.
+# Name order: <day>_000.tar before <day>_001.tar, so later parts overwrite changed files.
 while IFS= read -r -d '' tarfile; do
-  name="$(basename "$tarfile" .tar)"          # 2026-11-01_00
+  name="$(basename "$tarfile" .tar)"          # 2026-11-01_000
   day="${name%_*}" part="${name##*_}"
   tar -xf "$tarfile" -C "$DEST/data"
   if (cd "$DEST/data/$day" && sha256sum --quiet -c "SHA256SUMS_$part"); then

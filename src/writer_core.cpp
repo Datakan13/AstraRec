@@ -82,6 +82,14 @@ void WriterCore::record(AnyRecord& r, int64_t utc_ms) {
     }
   }
 
+  // Segment rotation: the first record of a new slot (e.g. a new hour of exchange
+  // time) closes the open segments, so finished hours can be uploaded during the
+  // day. A late record from an earlier slot just goes into the open segment.
+  if (opt_.segment_minutes > 0) {
+    const int64_t slot = static_cast<int64_t>(r.E_ms) / (opt_.segment_minutes * 60000LL);
+    if (segment_slot_ >= 0 && slot > segment_slot_) storage_.rotate_segments();
+    if (slot > segment_slot_) segment_slot_ = slot;
+  }
   if (r.E_ms > max_E_) max_E_ = r.E_ms;
   if (storage_.write(r)) ++stats_.records[group_index(r.group)];
   else ++stats_.write_errors;

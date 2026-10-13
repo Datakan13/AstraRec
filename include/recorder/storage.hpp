@@ -88,6 +88,9 @@ class Storage {
 
   bool end_frames();                   // all open segments + CSV fsync
   void close_days_before(int64_t day); // finishes those day folders
+  // Closes every open segment (renamed from .part, ready to upload); the next
+  // record of each day opens the next free segment number.
+  void rotate_segments();
   void close_all();
 
   uint64_t bytes_written(int64_t day) const;

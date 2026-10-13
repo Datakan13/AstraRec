@@ -26,6 +26,7 @@ namespace acrec {
 struct WriterOptions {
   int frame_interval_s = 60;     // end a zstd frame + fsync at least this often
   int day_close_grace_s = 120;   // keep yesterday's files open this long past midnight (exchange time)
+  int segment_minutes = 0;       // >0: close segments every N minutes of exchange time (0 = one per day)
 };
 
 struct WriterStats {
@@ -90,6 +91,7 @@ class WriterCore {
   uint64_t snap_version_ = ~0ull;
   uint64_t max_E_ = 0;
   int64_t last_frame_mono_ = -1;
+  int64_t segment_slot_ = -1;   // exchange-time slot of the open segments
 };
 
 }  // namespace acrec

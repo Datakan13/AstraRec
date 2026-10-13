@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
-# acrec_upload.sh: ship closed recorder days to Google Drive (rclone), then
-# prune old local days. Run hourly by acrec-upload.timer; safe to rerun at any time.
+# acrec_upload.sh: ship recorder data to Google Drive (rclone) and free local
+# disk. Run hourly (run_recorder.sh or acrec-upload.timer); safe to rerun at any time.
 #
 #   acrec_upload.sh [/opt/acrec/upload.env]
 #
-# For each <root>/YYYY-MM-DD that is closed (past midnight + GRACE_MIN, no .part):
-#   1. files not yet uploaded (new, or changed size/mtime) are streamed as ONE tar
-#      straight into rclone: no local temp copy. The tar holds the files plus
-#      SHA256SUMS for checking after extraction. Names: <day>_00.tar, then
-#      <day>_01.tar for anything that changed later (e.g. a late straggler segment).
-#   2. the tar's MD5 as streamed must equal the MD5 Drive reports, or nothing is
-#      recorded and the next run retries.
-#   3. verified files go into <day>/.uploaded (size, mtime, sha256, tar name).
-# A day whose files are all verified and that is older than KEEP_DAYS is deleted.
+# For each <root>/YYYY-MM-DD:
+#   - what is uploaded: finished segment files (*.bin.zst, not .part) at any time,
+#     so with recorder "segment_minutes": 60 each hour goes up during the day.
+#     meta.json and the CSVs keep changing until the day closes (past midnight
+#     UTC + GRACE_MIN), so they go up once it has.
+#   - how: new or changed files are streamed as ONE tar straight into rclone (no
+#     local temp copy), with SHA256SUMS_NNN inside. Names: <day>_000.tar,
+#     <day>_001.tar, ... An existing name on Drive is never overwritten.
+#   - check: the tar's MD5 as streamed must equal the MD5 Drive reports, or nothing
+#     is recorded and the next run retries. Verified files go into <day>/.uploaded.
+#   - local cleanup: a segment verified in an EARLIER run and older than
+#     KEEP_LOCAL_HOURS is deleted and replaced by an empty "<name>.pruned" marker
+#     (the recorder never reuses that segment number). A closed day with every
+#     file verified and older than KEEP_DAYS is deleted entirely.
 #
 # The data is a sealed holdout: this script never reads or prints contents,
 # only names, sizes and counts. The .bin.zst files are already zstd-compressed,
@@ -24,7 +29,8 @@ ENV_FILE="${1:-/opt/acrec/upload.env}"
 [[ -f "$ENV_FILE" ]] && source "$ENV_FILE"
 : "${ROOT:=/data/acrec}"            # recorder data root (recorder.json "root")
 : "${REMOTE:=gdrive:acrec}"         # rclone remote:path
-: "${KEEP_DAYS:=7}"                 # keep verified days locally this long
+: "${KEEP_DAYS:=7}"                 # delete a closed, fully verified day this many days after it ends
+: "${KEEP_LOCAL_HOURS:=-1}"         # >=0: also delete verified segments this old (-1 = keep until the day goes)
 : "${GRACE_MIN:=15}"                # wait this long after midnight UTC (recorder closes at +2 min)
 : "${MIN_DRIVE_FREE_GB:=5}"         # refuse to upload when Drive would end below this
 : "${RCLONE:=rclone}"
@@ -56,36 +62,61 @@ drive_free_gb() {
 }
 
 now=$(date -u +%s)
-uploaded=0 pruned=0 waiting=0
+uploaded=0 pruned=0 segpruned=0 waiting=0
 
 for dir in "$ROOT"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
   [[ -d "$dir" ]] || continue
   day="$(basename "$dir")"
   day_end=$(date -u -d "$day + 1 day" +%s) || { log "skip $day: bad name"; continue; }
 
-  # Not closed yet: still today (or just after midnight), or a segment is open.
-  if (( now < day_end + GRACE_MIN * 60 )); then continue; fi
-  if compgen -G "$dir/*.part" >/dev/null; then
-    log "$day: .part file present (recorder still writing a late segment?); retry later"
-    waiting=$((waiting + 1)); continue
+  closed=0
+  (( now >= day_end + GRACE_MIN * 60 )) && closed=1
+  if (( closed )) && compgen -G "$dir/*.part" >/dev/null; then
+    log "$day: closed but a .part file is open (late segment?); uploading what is finished"
+    waiting=$((waiting + 1))
   fi
 
   manifest="$dir/.uploaded"
   touch "$manifest"
+  verified() {   # name size mtime -> true if uploaded and verified unchanged
+    awk -v n="$1" -v s="$2" -v m="$3" '$1==n && $2==s && $3==m {found=1} END {exit !found}' "$manifest"
+  }
 
-  # Files that are new or changed since their last verified upload.
+  # 1. Free disk: segments verified in an earlier run (the manifest as it is now)
+  #    and older than KEEP_LOCAL_HOURS. A marker keeps the segment number taken.
+  if (( KEEP_LOCAL_HOURS >= 0 )); then
+    while IFS= read -r -d '' f; do
+      name="${f##*/}"
+      read -r size mtime < <(stat -c '%s %Y' "$f")
+      if (( now - mtime >= KEEP_LOCAL_HOURS * 3600 )) && verified "$name" "$size" "$mtime"; then
+        : > "$f.pruned" && rm -f -- "$f"
+        segpruned=$((segpruned + 1))
+      fi
+    done < <(find "$dir" -maxdepth 1 -type f -name '*.bin.zst' -print0)
+  fi
+
+  # 2. What to upload: finished segments always; everything else once closed.
   : > "$WORK/todo"
+  if (( closed )); then
+    filter=(! -name '.*' ! -name '*.tmp' ! -name '*.part' ! -name '*.pruned')
+  else
+    filter=(-name '*.bin.zst')
+  fi
   while IFS= read -r -d '' f; do
     name="${f##*/}"
     read -r size mtime < <(stat -c '%s %Y' "$f")
-    if ! awk -v n="$name" -v s="$size" -v m="$mtime" '$1==n && $2==s && $3==m {found=1} END {exit !found}' "$manifest"; then
-      echo "$name $size $mtime" >> "$WORK/todo"
-    fi
-  done < <(find "$dir" -maxdepth 1 -type f ! -name '.*' ! -name '*.tmp' -print0 | sort -z)
+    verified "$name" "$size" "$mtime" || echo "$name $size $mtime" >> "$WORK/todo"
+  done < <(find "$dir" -maxdepth 1 -type f "${filter[@]}" -print0 | sort -z)
 
   if [[ -s "$WORK/todo" ]]; then
-    part=$(awk '{print $5}' "$manifest" | sort -u | wc -l)
-    tarname=$(printf '%s_%02d.tar' "$day" "$part")
+    # Next part number after the highest one already used for this day; an
+    # existing name on Drive is skipped, never overwritten.
+    part=$(awk '{n = $5; sub(/.*_/, "", n); sub(/\.tar$/, "", n); n += 0; if (n >= max) max = n + 1} END {print max + 0}' "$manifest")
+    tarname=$(printf '%s_%03d.tar' "$day" "$part")
+    while [[ -n "$("$RCLONE" lsf --files-only --include "/$tarname" "$REMOTE" 2>/dev/null)" ]]; do
+      part=$((part + 1)); tarname=$(printf '%s_%03d.tar' "$day" "$part")
+    done
+    sumsname=$(printf 'SHA256SUMS_%03d' "$part")
     nfiles=$(wc -l < "$WORK/todo")
     bytes=$(awk '{s += $2} END {print s + 0}' "$WORK/todo")
 
@@ -97,10 +128,9 @@ for dir in "$ROOT"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
     # Checksums of exactly the files going into this tar.
     sums="$WORK/$day"
     mkdir -p "$sums"
-    (cd "$dir" && awk '{print $1}' "$WORK/todo" | xargs -d '\n' sha256sum) > "$sums/SHA256SUMS_$(printf '%02d' "$part")"
+    (cd "$dir" && awk '{print $1}' "$WORK/todo" | xargs -d '\n' sha256sum) > "$sums/$sumsname"
 
     log "$day: uploading $tarname ($nfiles files, $((bytes / 1000000)) MB)"
-    # Stream: tar -> tee (MD5 of exactly what is sent) -> rclone. No local copy.
     awk -v d="$day" '{print d "/" $1}' "$WORK/todo" > "$WORK/members"
     # MD5 of exactly the bytes sent, computed by a background reader of a FIFO
     # that tee feeds, and waited for explicitly before it is compared.
@@ -111,7 +141,7 @@ for dir in "$ROOT"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
     set +e
     # One archive: the day's files (relative to ROOT), then SHA256SUMS (relative to WORK).
     # shellcheck disable=SC2086  # RCLONE_FLAGS is a list of flags
-    tar -cf - -C "$ROOT" --files-from="$WORK/members" -C "$WORK" "$day/SHA256SUMS_$(printf '%02d' "$part")" |
+    tar -cf - -C "$ROOT" --files-from="$WORK/members" -C "$WORK" "$day/$sumsname" |
       tee "$WORK/md5pipe" |
       "$RCLONE" rcat $RCLONE_FLAGS "$REMOTE/$tarname"
     rc=("${PIPESTATUS[@]}")
@@ -126,24 +156,24 @@ for dir in "$ROOT"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
     # Record each verified file (atomically).
     cp "$manifest" "$manifest.tmp"
     while read -r name size mtime; do
-      sha=$(awk -v n="$name" '$2==n {print $1}' "$sums/SHA256SUMS_$(printf '%02d' "$part")")
+      sha=$(awk -v n="$name" '$2==n {print $1}' "$sums/$sumsname")
       echo "$name $size $mtime $sha $tarname" >> "$manifest.tmp"
     done < "$WORK/todo"
     mv -f "$manifest.tmp" "$manifest"
     LAST_UPLOAD="$tarname"
     uploaded=$((uploaded + 1))
     log "$day: $tarname verified on Drive (md5 $local_md5)"
-    continue   # never prune in the same run as an upload
+    continue   # never delete a day in the same run as an upload
   fi
 
-  # Everything verified: prune once old enough.
-  if (( now > day_end + KEEP_DAYS * 86400 )); then
-    log "$day: all files verified on Drive and older than $KEEP_DAYS days; deleting local copy"
+  # 3. Closed, everything verified, old enough: delete the whole day folder.
+  if (( closed )) && ! compgen -G "$dir/*.part" >/dev/null && (( now >= day_end + KEEP_DAYS * 86400 )); then
+    log "$day: all files verified on Drive; deleting local copy (KEEP_DAYS=$KEEP_DAYS)"
     rm -rf -- "$dir"
     pruned=$((pruned + 1))
   fi
 done
 
 DRIVE_FREE_GB=$(drive_free_gb)
-log "done: $uploaded uploaded, $pruned pruned, $waiting waiting; Drive free ${DRIVE_FREE_GB} GB"
-write_status "ok" "$uploaded uploaded, $pruned pruned, $waiting waiting"
+log "done: $uploaded uploaded, $segpruned segments and $pruned days deleted locally, $waiting waiting; Drive free ${DRIVE_FREE_GB} GB"
+write_status "ok" "$uploaded uploaded, $segpruned segments + $pruned days deleted locally, $waiting waiting"

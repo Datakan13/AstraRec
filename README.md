@@ -69,7 +69,7 @@ ctest --test-dir build -R recorder --output-on-failure
 | Test | Covers |
 |---|---|
 | `recorder_roundtrip` (spec test 1) | 252 fixture messages → `acrec_replay` → files → `acrec_read.py`; every value equal to the fixture string exactly; reader on a truncated/torn crash file |
-| `recorder_test` (spec tests 2–6) | exact `gaps.csv` rows for a broken `pu` link and a skipped agg id; day rollover at 00:00:00.000 by `E`; a forked writer killed mid-segment → `.crash`, next segment number, every complete frame decodes; rotation overlap → one `rotation_overlap` row, no gaps; tick change → new id, `replaced_by`, `events.csv` row; restart keeps the day's ids; decimal and parser edge cases |
+| `recorder_test` (spec tests 2–6) | exact `gaps.csv` rows for a broken `pu` link and a skipped agg id; day rollover at 00:00:00.000 by `E`; a forked writer killed mid-segment → `.crash`, next segment number, every complete frame decodes; rotation overlap → one `rotation_overlap` row, no gaps; tick change → new id, `replaced_by`, `events.csv` row; restart keeps the day's ids; hourly segments close exactly at the hour and a restart skips `.pruned` numbers; decimal and parser edge cases |
 | `recorder_manager_test` | fake transport + clock: shard layout and `/public` vs `/market`; depth set (top USDT by 24 h quote volume + all USDC); disconnect → backoff → reconnect rows with exchange times; stall; a full rotation with overlap; listing/delisting → SUBSCRIBE/UNSUBSCRIBE + events; writer backpressure; heartbeat without prices |
 
 The fixtures are made-up values in Binance's live layout (`tests/fixtures/make_fixtures.py`).
@@ -90,6 +90,8 @@ cmake -S . -B build -DHAR_BUILD_LIVE=ON -DRECORDER_BUILD_LIVE=ON && cmake --buil
 ```
 
 - **Segment names:** `.part` while open. A clean close renames to `.bin.zst`; after a crash, startup renames a leftover `.part` to `.crash.bin.zst`. A restart takes the next free segment number and never appends to an existing file.
+- **Hourly segments** (`"segment_minutes": 60`, the deploy default): the first record of each new hour of exchange time closes every open segment, so `bbo.000` holds 00:00–01:00, `bbo.001` 01:00–02:00, and so on (plus extra numbers after restarts). Finished hours can then be uploaded and deleted locally during the day. With `0`, one segment covers the whole day, as in spec v1.
+- **`<name>.pruned`:** an empty marker the uploader leaves after deleting a verified segment locally. It keeps that segment number taken, so a restart never reuses it.
 - **Symbol ids:** dense and stable within a day, also across restarts (reloaded from `meta.json`). A tick/step change gives a new id.
 - **Day closing:** a day is closed 2 min after exchange time passes midnight. A later straggler for that day opens a new segment.
 - **`gaps.csv` kinds:**
@@ -139,15 +141,19 @@ ctest --test-dir build --output-on-failure
 Results: `build/recorder` and `build/recorder.json` (a copy of `deploy/recorder.json`).
 Update later with `git pull && git submodule update --init --depth 1 external/AstraConnect`.
 
-## Deployment (Oracle Cloud ARM, Tokyo/Seoul)
+## Deployment
 
-1. Implement ASTRACONNECT_SPEC.md (A2 and B1 are what make it build on aarch64), then build on the server.
+Runs on any Linux server in a region Binance serves (US IPs get HTTP 451). The
+current server is a **Hetzner Cloud 1 GB, 1 vCPU, 19 GB disk VM in Helsinki**; see
+"Small server" below for what that needs.
+
+1. Build on the server ("Clone only the recorder"). Needs about 1.5 GB of memory for one file, so add swap on small servers.
 2. `sudo useradd -r acrec`, `sudo mkdir -p /opt/acrec /data/acrec`, and `chown acrec /data/acrec`. Copy the `recorder` binary and `deploy/recorder.json` to `/opt/acrec`.
 3. Install `deploy/recorder.service` and run `systemctl enable --now recorder`. It uses `Restart=always`, and SIGTERM stops it cleanly.
 4. Watch `heartbeat.json`:
    - every enabled group should show `msgs_per_s > 0`
    - `conns_up == conns_total`
-   - `warnings` lists disk free under 20 GB and any group quiet for over 5 min
+   - `warnings` lists disk free under `min_disk_free_gb` and any group quiet for over 5 min
 5. The recorder never deletes anything. Uploading and cleanup are handled separately (next section).
 
 **Disk is an estimate, not yet measured.** Uncompressed record bytes at today's
@@ -157,28 +163,59 @@ measured rates come to roughly 65 GB/day:
 - trades about 4 GB
 - mark about 2 GB
 
-zstd level 3 on this kind of data typically gives 4–8×, so expect about **8–16 GB/day**. That's above the spec's 3–6 GB, and the free tier's 200 GB holds roughly two weeks. Check `bytes_written_today` after the first full day. If it's too high, raise `zstd_level` (costs CPU) or plan a format v2 with delta-encoded fields.
+zstd level 3 on this kind of data typically gives 4–8×, so expect about **8–16 GB/day**. That's above the spec's 3–6 GB. Check `bytes_written_today` after the first full day. If it's too high, raise `zstd_level` (costs CPU) or plan a format v2 with delta-encoded fields.
+
+### Small server (Hetzner 1 GB / 1 vCPU / 19 GB disk)
+
+The deploy defaults are set for this:
+
+| Setting | Value | Why |
+|---|---|---|
+| `recorder.json` `segment_minutes` | 60 | each finished hour can be uploaded during the day |
+| `recorder.json` `min_disk_free_gb` | 3 | the heartbeat warning threshold (20 would always warn on a 19 GB disk) |
+| `upload.env` `KEEP_LOCAL_HOURS` | 0 | a segment is deleted locally on the run after its verified upload |
+| `upload.env` `KEEP_DAYS` | 0 | a closed day's folder (meta, CSVs, markers) goes on the run after its last upload |
+
+Segments close at :00 and the upload runs at :30. A segment goes up at the first :30 after it closes and is deleted at the next one. So the disk holds about 1.5–2.5 hours of data, roughly 0.5–2 GB, instead of 1–2 days.
+
+**Building:** the biggest file needs about 1.4 GB of compiler memory. With 1 GB RAM, add a 2 GB swap file and build one file at a time:
+```bash
+fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
+cmake --build build -j1
+```
+
+**Watch on the first live run:**
+- In `heartbeat.json`, `writer_queue.fill` should stay near 0 and `dropped_total` at 0. If either climbs, the single shared vCPU isn't keeping up.
+- `bytes_written_today` gives the real daily size.
+
+If Drive or the network is down for long, segments pile up locally (about 0.3–0.7 GB per hour). The mail turns WARN when disk free drops below `min_disk_free_gb`.
 
 ## Upload to Google Drive, then to the PC
 
 ```
-server: recorder -> /data/acrec/<day>/   --acrec_upload.sh (hourly)-->   Drive: acrec/<day>_00.tar
+server: recorder -> /data/acrec/<day>/   --acrec_upload.sh (hourly)-->   Drive: acrec/<day>_000.tar, _001.tar, ...
 PC:     acrec_pull.sh (weekly or more)   <--moves, verified--             (Drive freed)
 ```
 
 **Server side: `deploy/acrec_upload.sh`, run hourly by `acrec-upload.timer`.**
-- **What gets uploaded:** every *closed* day, meaning past midnight UTC + 15 min with no `.part` file. Today's folder is never touched.
-- **One tar per day:** the day's files are streamed straight into rclone as one `<day>_00.tar`, with `SHA256SUMS_00` inside. No local temp copy is made, and the tar isn't compressed again because the `.bin.zst` files already are.
+- **What gets uploaded:**
+  - **Finished segments at any time,** including today's. With hourly segments, each hour goes up in the run after it ends.
+  - **`meta.json` and the CSVs** only once the day is closed (past midnight UTC + 15 min), because they change until then.
+  - **Never** a `.part` file that's still being written.
+- **One tar per run per day:** new files are streamed straight into rclone as `<day>_000.tar`, then `<day>_001.tar`, and so on, each with its `SHA256SUMS_NNN` inside. No local temp copy is made, and the tar isn't compressed again because the `.bin.zst` files already are. An existing name on Drive is never overwritten; the next number is used instead.
 - **Verification:** the MD5 of the bytes sent must equal the MD5 Drive reports, or nothing is recorded and the next hourly run retries.
-- **Late changes:** files that change after upload (a late straggler segment, a rewritten `meta.json`) go up as `<day>_01.tar`, and so on.
-- **Local cleanup:** a day is deleted locally only when every file is verified on Drive and the day is older than `KEEP_DAYS` (7).
+- **Late changes:** files that change after upload (a late straggler segment, a rewritten `meta.json`) go up again in the next part.
+- **Local cleanup** (only ever for files verified on Drive):
+  - **Segments:** a segment verified in an earlier run and older than `KEEP_LOCAL_HOURS` is deleted and leaves a `.pruned` marker. `-1` keeps segments until the whole day goes.
+  - **Days:** a closed day is deleted once every file is verified and the day is older than `KEEP_DAYS`. The deploy default for both is `0`; see "Small server".
 - **Drive space:** it refuses to upload if Drive would drop below `MIN_DRIVE_FREE_GB` (5). With a 100–200 GB plan that happens after roughly 1–3 weeks unless the PC pulls data off.
 - **Status:** `<root>/upload_status.json` (last run, last upload, Drive free GB) and `journalctl -u acrec-upload`.
 - It never reads or prints the data itself, only names, sizes and counts.
 
 **PC side: `deploy/acrec_pull.sh DEST` (Linux/WSL).**
 - `rclone move` brings the tars down. Drive deletes a tar only after the download's MD5 matches.
-- Each tar is unpacked into `DEST/data/` in name order (so `_01` replaces files changed since `_00`) and checked against its `SHA256SUMS`.
+- Each tar is unpacked into `DEST/data/` in name order (so a later part replaces files changed since an earlier one) and checked against its `SHA256SUMS_NNN`.
 - A tar is deleted only once every file in it verifies.
 - Run it at least weekly with a 100–200 GB Drive, e.g. from Windows Task Scheduler via `wsl`. Then read the data with `acrec_read.read_day("DEST/data/2026-11-01", "trades")`.
 
@@ -214,9 +251,9 @@ PC:     acrec_pull.sh (weekly or more)   <--moves, verified--             (Drive
    RCLONE_CONFIG=/opt/acrec/rclone.conf nohup /opt/acrec/run_recorder.sh >> /opt/acrec/run_recorder.log 2>&1 &
    ```
    Paths come from the environment: `RECORDER`, `CONFIG`, `UPLOAD`, `UPLOAD_ENV`, `UPLOAD_MINUTE`, plus `UPLOAD_ENABLED=0` to run the recorder only.
-6. **Test the whole path once before the real holdout starts:** let a day close, check `<day>_00.tar` appears on Drive, then run `acrec_pull.sh` on the PC and confirm it reports "unpacked and verified".
+6. **Test the whole path once before the real holdout starts:** after the first full hour, check that `<day>_000.tar` appears on Drive and the segment is replaced by a `.pruned` marker on the next run. Then run `acrec_pull.sh` on the PC and confirm it reports "unpacked and verified".
 
-Oracle's free tier allows 10 TB/month of outbound traffic; 8–16 GB/day is well inside it.
+Traffic: 8–16 GB/day is about 0.5 TB/month, well inside Hetzner's 20 TB.
 
 ## Status mail every 6 hours
 
@@ -245,4 +282,4 @@ The report shows, for each group, messages/s, connections up, seconds quiet and 
    - **With `run_recorder.sh`:** nothing more to do. It mails about 2 min after start, so you learn about restarts, then at 00/06/12/18 UTC. Mails stay off while `/opt/acrec/mail.env` doesn't exist. Settings: `MAIL_ENV`, `MAIL_EVERY_H`.
    - **With `recorder.service`:** install `deploy/acrec-mail.service` and `deploy/acrec-mail.timer`, then `systemctl enable --now acrec-mail.timer`.
 
-Oracle Cloud blocks outbound port 25, but port 587 (STARTTLS) and 465 (`SMTP_TLS=ssl`) work. Another provider works too: set `SMTP_HOST`, `SMTP_PORT` and `SMTP_TLS`.
+Hetzner Cloud blocks outgoing ports 25 and 465 on new servers, so keep port 587 with `SMTP_TLS=starttls` (the default). Another provider works too: set `SMTP_HOST`, `SMTP_PORT` and `SMTP_TLS`.
