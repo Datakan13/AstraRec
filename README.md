@@ -115,6 +115,25 @@ trades = ar.read_day("/data/acrec/2026-11-01", "trades")   # all segments incl. 
 
 `python3 recorder/python/acrec_read.py <files>` prints counts and time ranges only.
 
+## Clone only the recorder
+
+The recorder needs only `recorder/` and the `external/AstraConnect` submodule.
+The repo is private, so use a GitHub token (or a deploy key) on the server.
+
+```bash
+sudo apt install -y git cmake g++ pkg-config libzstd-dev libboost-system-dev libboost-thread-dev libssl-dev python3-numpy python3-pandas python3-zstandard
+git clone --filter=blob:none --sparse https://github.com/Datakan13/Forecasting.git acrec
+cd acrec
+git sparse-checkout set recorder external
+git submodule update --init --depth 1 external/AstraConnect
+cmake -S recorder -B build -DRECORDER_BUILD_LIVE=ON
+cmake --build build -j
+ctest --test-dir build --output-on-failure
+```
+
+Results: `build/recorder` and `build/recorder.json` (a copy of `deploy/recorder.json`).
+Update later with `git pull && git submodule update --init --depth 1 external/AstraConnect`.
+
 ## Deployment (Oracle Cloud ARM, Tokyo/Seoul)
 
 1. Implement ASTRACONNECT_SPEC.md (A2 and B1 are what make it build on aarch64), then build on the server.
