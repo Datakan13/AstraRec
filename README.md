@@ -118,12 +118,17 @@ trades = ar.read_day("/data/acrec/2026-11-01", "trades")   # all segments incl. 
 ## Clone only the recorder
 
 The recorder needs only `recorder/` and the `external/AstraConnect` submodule.
-The repo is private, so use a GitHub token (or a deploy key) on the server.
+The repo is private: the server clones it over SSH with the deploy key
+`/root/.ssh/github_deploy` (run as root). AstraConnect is public and comes over
+HTTPS, which matters because a deploy key only works for the repo it's attached to.
 
 ```bash
 sudo apt install -y git cmake g++ pkg-config libzstd-dev libboost-system-dev libboost-thread-dev libssl-dev python3-numpy python3-pandas python3-zstandard
-git clone --filter=blob:none --sparse https://github.com/Datakan13/Forecasting.git acrec
+chmod 600 /root/.ssh/github_deploy
+export GIT_SSH_COMMAND='ssh -i /root/.ssh/github_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new'
+git clone --filter=blob:none --sparse git@github.com:Datakan13/Forecasting.git acrec
 cd acrec
+git config core.sshCommand "$GIT_SSH_COMMAND"     # later pulls use the key too
 git sparse-checkout set recorder external
 git submodule update --init --depth 1 external/AstraConnect
 cmake -S recorder -B build -DRECORDER_BUILD_LIVE=ON

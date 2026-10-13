@@ -35,7 +35,7 @@ int64_t day_of_ms(int64_t ms) { return ms >= 0 ? ms / kMsPerDay : -((-ms + kMsPe
 std::string day_string(int64_t day) {
   int y; unsigned m, d;
   civil_from_days(day, y, m, d);
-  char buf[16];
+  char buf[32];   // room for any int year, so GCC 15 sees no truncation
   std::snprintf(buf, sizeof buf, "%04d-%02u-%02u", y, m, d);
   return buf;
 }

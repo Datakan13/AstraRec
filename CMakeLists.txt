@@ -27,7 +27,10 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   target_include_directories(simdjson SYSTEM PUBLIC ${HAR_ASTRACONNECT_DIR}/include)
   option(RECORDER_BUILD_LIVE "Build the live recorder binary" OFF)
   if(RECORDER_BUILD_LIVE)
-    find_package(Boost 1.74 REQUIRED COMPONENTS system thread)
+    # AstraConnect uses only header-only Boost (Beast, Asio, UUID). Boost.System has
+    # been header-only since 1.69 and its stub library is gone from 1.89 on, so ask
+    # for the headers through Boost's own CMake package (no FindBoost, no CMP0167).
+    find_package(Boost 1.74 REQUIRED CONFIG)
     find_package(OpenSSL REQUIRED)
     find_package(Threads REQUIRED)
     # Header-only; its own CMakeLists builds tests and forces -march=native, so
@@ -36,7 +39,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     target_include_directories(astraconnect SYSTEM INTERFACE ${HAR_ASTRACONNECT_DIR}/src ${HAR_ASTRACONNECT_DIR}/include)
     target_compile_features(astraconnect INTERFACE cxx_std_20)
     target_link_libraries(astraconnect INTERFACE
-      simdjson Boost::system Boost::thread OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
+      simdjson Boost::headers OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
     add_library(AstraConnect::AstraConnect ALIAS astraconnect)
   endif()
 endif()
