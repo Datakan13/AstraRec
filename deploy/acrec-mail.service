@@ -1,0 +1,11 @@
+# Mails the recorder status report (see acrec_mail.py). Started by
+# acrec-mail.timer. Only needed with recorder.service; run_recorder.sh mails by itself.
+[Unit]
+Description=Mail recorder status report
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=acrec
+ExecStart=/usr/bin/python3 -I /opt/acrec/acrec_mail.py /opt/acrec/mail.env

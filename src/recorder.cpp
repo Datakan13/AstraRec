@@ -26,6 +26,13 @@ std::string json_str(const std::string& s) {
   return o + '"';
 }
 
+std::string http_error(const char* what, int status) {
+  std::string e = std::string(what) + " HTTP " + std::to_string(status);
+  if (status == 451) e += " (Binance blocks this server's location, e.g. US IPs: run it from an allowed region)";
+  if (status == 418 || status == 429) e += " (rate limited by Binance)";
+  return e;
+}
+
 }  // namespace
 
 Recorder::Conn::~Conn() {
@@ -358,7 +365,7 @@ bool Recorder::refresh_exchange_info(bool first, std::string& err) {
   std::string body;
   int status = 0;
   if (!transport_.http_get(cfg_.rest_host, "/fapi/v1/exchangeInfo", body, status, err)) return false;
-  if (status != 200) { err = "exchangeInfo HTTP " + std::to_string(status); return false; }
+  if (status != 200) { err = http_error("exchangeInfo", status); return false; }
   std::vector<SymbolSpec> specs;
   if (!parse_exchange_info(body, cfg_.universe, specs, err)) return false;
   const int64_t utc = clock_.utc_ms();
@@ -379,7 +386,7 @@ bool Recorder::refresh_depth_set(std::string& err) {
   std::string body;
   int status = 0;
   if (!transport_.http_get(cfg_.rest_host, "/fapi/v1/ticker/24hr", body, status, err)) return false;
-  if (status != 200) { err = "ticker/24hr HTTP " + std::to_string(status); return false; }
+  if (status != 200) { err = http_error("ticker/24hr", status); return false; }
   simdjson::dom::parser p;
   simdjson::dom::array arr;
   if (p.parse(body).get_array().get(arr)) { err = "ticker/24hr: not an array"; return false; }

@@ -1,0 +1,17 @@
+# Uploads closed recorder days to Google Drive (see acrec_upload.sh).
+# Started by acrec-upload.timer. Logs: journalctl -u acrec-upload
+[Unit]
+Description=Upload closed recorder days to Google Drive
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=acrec
+ExecStart=/opt/acrec/acrec_upload.sh /opt/acrec/upload.env
+# The Drive token (from `rclone config`, see recorder/README.md). The acrec user
+# has no home folder, so the config lives next to the binary.
+Environment=RCLONE_CONFIG=/opt/acrec/rclone.conf
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=6h

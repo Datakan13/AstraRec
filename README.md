@@ -78,7 +78,7 @@ The fixtures are made-up values in Binance's live layout (`tests/fixtures/make_f
 
 ```bash
 cmake -S . -B build -DHAR_BUILD_LIVE=ON -DRECORDER_BUILD_LIVE=ON && cmake --build build -j
-./build/recorder build/recorder.json
+./build/recorder/recorder build/recorder.json
 ```
 
 ## Output
@@ -124,7 +124,7 @@ trades = ar.read_day("/data/acrec/2026-11-01", "trades")   # all segments incl. 
    - every enabled group should show `msgs_per_s > 0`
    - `conns_up == conns_total`
    - `warnings` lists disk free under 20 GB and any group quiet for over 5 min
-5. The recorder never deletes anything. The rclone upload and cleanup are separate.
+5. The recorder never deletes anything. Uploading and cleanup are handled separately (next section).
 
 **Disk is an estimate, not yet measured.** Uncompressed record bytes at today's
 measured rates come to roughly 65 GB/day:
@@ -134,3 +134,91 @@ measured rates come to roughly 65 GB/day:
 - mark about 2 GB
 
 zstd level 3 on this kind of data typically gives 4–8×, so expect about **8–16 GB/day**. That's above the spec's 3–6 GB, and the free tier's 200 GB holds roughly two weeks. Check `bytes_written_today` after the first full day. If it's too high, raise `zstd_level` (costs CPU) or plan a format v2 with delta-encoded fields.
+
+## Upload to Google Drive, then to the PC
+
+```
+server: recorder -> /data/acrec/<day>/   --acrec_upload.sh (hourly)-->   Drive: acrec/<day>_00.tar
+PC:     acrec_pull.sh (weekly or more)   <--moves, verified--             (Drive freed)
+```
+
+**Server side: `deploy/acrec_upload.sh`, run hourly by `acrec-upload.timer`.**
+- **What gets uploaded:** every *closed* day, meaning past midnight UTC + 15 min with no `.part` file. Today's folder is never touched.
+- **One tar per day:** the day's files are streamed straight into rclone as one `<day>_00.tar`, with `SHA256SUMS_00` inside. No local temp copy is made, and the tar isn't compressed again because the `.bin.zst` files already are.
+- **Verification:** the MD5 of the bytes sent must equal the MD5 Drive reports, or nothing is recorded and the next hourly run retries.
+- **Late changes:** files that change after upload (a late straggler segment, a rewritten `meta.json`) go up as `<day>_01.tar`, and so on.
+- **Local cleanup:** a day is deleted locally only when every file is verified on Drive and the day is older than `KEEP_DAYS` (7).
+- **Drive space:** it refuses to upload if Drive would drop below `MIN_DRIVE_FREE_GB` (5). With a 100–200 GB plan that happens after roughly 1–3 weeks unless the PC pulls data off.
+- **Status:** `<root>/upload_status.json` (last run, last upload, Drive free GB) and `journalctl -u acrec-upload`.
+- It never reads or prints the data itself, only names, sizes and counts.
+
+**PC side: `deploy/acrec_pull.sh DEST` (Linux/WSL).**
+- `rclone move` brings the tars down. Drive deletes a tar only after the download's MD5 matches.
+- Each tar is unpacked into `DEST/data/` in name order (so `_01` replaces files changed since `_00`) and checked against its `SHA256SUMS`.
+- A tar is deleted only once every file in it verifies.
+- Run it at least weekly with a 100–200 GB Drive, e.g. from Windows Task Scheduler via `wsl`. Then read the data with `acrec_read.read_day("DEST/data/2026-11-01", "trades")`.
+
+### One-time setup
+
+1. **Install rclone** on the server and the PC. The official build is newer than apt's: `curl https://rclone.org/install.sh | sudo bash`.
+2. **Optional: your own Google OAuth client id.** It avoids rclone's shared rate limits. See https://rclone.org/drive/#making-your-own-client-id. Use the same id on the server and the PC.
+3. **Create the Drive remote on the server** (it has no browser):
+   ```bash
+   sudo -u acrec RCLONE_CONFIG=/opt/acrec/rclone.conf rclone config
+   # n (new) -> name: gdrive -> storage: drive -> client_id/secret (step 2, or blank)
+   # scope: 3  (drive.file: rclone can only see the files it creates)
+   # Use auto config? n  -> it prints: rclone authorize "drive" "<…>"
+   ```
+   Run that `rclone authorize …` command on the PC. A browser opens; log in to your Google account and paste the token it prints back into the server prompt.
+4. **Create the same remote on the PC** with plain `rclone config` (the browser works there). Use the same client id; with `drive.file` the PC sees the files the server created.
+5. **Install the uploader:**
+   ```bash
+   sudo cp deploy/acrec_upload.sh deploy/upload.env /opt/acrec/
+   sudo chmod +x /opt/acrec/acrec_upload.sh && sudo chown acrec /opt/acrec/rclone.conf
+   sudo cp deploy/acrec-upload.service deploy/acrec-upload.timer /etc/systemd/system/
+   sudo systemctl daemon-reload && sudo systemctl enable --now acrec-upload.timer
+   sudo systemctl start acrec-upload   # one run now; check journalctl -u acrec-upload
+   ```
+   **Or use one script for both** instead of `recorder.service` + the timer (use one setup or the other, not both):
+   `deploy/run_recorder.sh` starts the recorder, restarts it if it exits (5 s backoff, doubling to 5 min on repeated quick failures), and runs `acrec_upload.sh` every hour at :30 UTC. Ctrl-C or SIGTERM stops it cleanly; the recorder gets up to 60 s to close its files.
+   ```bash
+   sudo cp deploy/run_recorder.sh /opt/acrec/ && sudo chmod +x /opt/acrec/run_recorder.sh
+   # as a service:
+   sudo cp deploy/run_recorder.service /etc/systemd/system/ && sudo systemctl daemon-reload
+   sudo systemctl enable --now run_recorder
+   # or by hand (no systemd, e.g. WSL):
+   RCLONE_CONFIG=/opt/acrec/rclone.conf nohup /opt/acrec/run_recorder.sh >> /opt/acrec/run_recorder.log 2>&1 &
+   ```
+   Paths come from the environment: `RECORDER`, `CONFIG`, `UPLOAD`, `UPLOAD_ENV`, `UPLOAD_MINUTE`, plus `UPLOAD_ENABLED=0` to run the recorder only.
+6. **Test the whole path once before the real holdout starts:** let a day close, check `<day>_00.tar` appears on Drive, then run `acrec_pull.sh` on the PC and confirm it reports "unpacked and verified".
+
+Oracle's free tier allows 10 TB/month of outbound traffic; 8–16 GB/day is well inside it.
+
+## Status mail every 6 hours
+
+`deploy/acrec_mail.py` mails a plain-text report built from `heartbeat.json` and `upload_status.json`. The subject starts with the status:
+
+| Status | Meaning |
+|---|---|
+| **DOWN** | `heartbeat.json` missing or older than 5 min: the recorder isn't running |
+| **WARN** | heartbeat warnings, fewer connections up than expected, a writer error, an upload error |
+| **OK** | none of the above |
+
+The report shows, for each group, messages/s, connections up, seconds quiet and records dropped. It also shows gaps today, GB written today, disk free, writer-queue fill, the last upload and Drive's free space, plus each local day's size and whether it's been uploaded. It contains counts and states only, never prices. It uses only Python's standard library, so there's nothing to install.
+
+**Setup (Gmail as sender):**
+1. **App password:** turn on 2-step verification for the sending Google account. Then create an app password at https://myaccount.google.com/apppasswords. Gmail refuses your normal password over SMTP.
+2. **Store it:**
+   ```bash
+   echo 'the16charapppass' | sudo tee /opt/acrec/smtp_password >/dev/null
+   sudo chown acrec /opt/acrec/smtp_password && sudo chmod 600 /opt/acrec/smtp_password
+   sudo cp deploy/acrec_mail.py deploy/mail.env /opt/acrec/   # then edit MAIL_TO, MAIL_FROM, SMTP_USER
+   ```
+3. **Test it:**
+   - `python3 -I /opt/acrec/acrec_mail.py /opt/acrec/mail.env --dry-run` prints the mail.
+   - Without `--dry-run`, it sends one.
+4. **Schedule it:**
+   - **With `run_recorder.sh`:** nothing more to do. It mails about 2 min after start, so you learn about restarts, then at 00/06/12/18 UTC. Mails stay off while `/opt/acrec/mail.env` doesn't exist. Settings: `MAIL_ENV`, `MAIL_EVERY_H`.
+   - **With `recorder.service`:** install `deploy/acrec-mail.service` and `deploy/acrec-mail.timer`, then `systemctl enable --now acrec-mail.timer`.
+
+Oracle Cloud blocks outbound port 25, but port 587 (STARTTLS) and 465 (`SMTP_TLS=ssl`) work. Another provider works too: set `SMTP_HOST`, `SMTP_PORT` and `SMTP_TLS`.

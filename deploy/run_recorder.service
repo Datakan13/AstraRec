@@ -1,0 +1,22 @@
+# Alternative to recorder.service + acrec-upload.timer: one unit running
+# run_recorder.sh (recorder + hourly Drive upload). Use one setup or the other.
+[Unit]
+Description=Market-data recorder with hourly Google Drive upload
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=acrec
+WorkingDirectory=/opt/acrec
+Environment=RECORDER=/opt/acrec/recorder CONFIG=/opt/acrec/recorder.json
+Environment=UPLOAD=/opt/acrec/acrec_upload.sh UPLOAD_ENV=/opt/acrec/upload.env
+Environment=RCLONE_CONFIG=/opt/acrec/rclone.conf
+ExecStart=/opt/acrec/run_recorder.sh
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=90
+
+[Install]
+WantedBy=multi-user.target

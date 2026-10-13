@@ -1,0 +1,12 @@
+# Hourly, starting 00:30 UTC: a closed day is uploaded within the first run after
+# midnight, and a failed upload is retried the next hour.
+[Unit]
+Description=Hourly upload of closed recorder days
+
+[Timer]
+OnCalendar=*-*-* *:30:00 UTC
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target
