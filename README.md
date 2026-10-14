@@ -229,71 +229,84 @@ cmake --build build -j1            # resumes where it stopped; that one file tak
 - In `heartbeat.json`, `writer_queue.fill` should stay near 0 and `dropped_total` at 0. If either climbs, the single shared vCPU isn't keeping up.
 - `bytes_written_today` gives the real daily size.
 
-If Drive or the network is down for long, segments pile up locally (about 0.3–0.7 GB per hour). The mail turns WARN when disk free drops below `min_disk_free_gb`.
+If the Storage Box or the network is down for long, segments pile up locally (about 0.3–0.7 GB per hour). The mail turns WARN when disk free drops below `min_disk_free_gb`.
 
-## Upload to Google Drive, then to the PC
+## Upload to the Hetzner Storage Box, then to the PC
 
 ```
-server: recorder -> /data/acrec/<day>/   --acrec_upload.sh (hourly)-->   Drive: acrec/<day>_000.tar, _001.tar, ...
-PC:     acrec_pull.sh (weekly or more)   <--moves, verified--             (Drive freed)
+server: recorder -> /data/acrec/<day>/  --acrec_upload.sh (hourly, SFTP)-->  Storage Box: acrec/<day>_000.tar, _001.tar, ...
+PC:     acrec_pull.sh (as often as you like)  <--copies (or moves), verified--  Storage Box (the archive)
 ```
 
-**Server side: `deploy/acrec_upload.sh`, run hourly by `acrec-upload.timer`.**
+Transfers use rclone's SFTP backend on the box's port 23, logging in with an SSH key, with the box's host key pinned. Any other rclone remote works too: set `REMOTE`.
+
+**Server side: `deploy/acrec_upload.sh`, run hourly (by `run_recorder.sh` or `acrec-upload.timer`).**
 - **What gets uploaded:**
   - **Finished segments at any time,** including today's. With hourly segments, each hour goes up in the run after it ends.
-  - **`meta.json` and the CSVs** only once the day is closed (past midnight UTC + 15 min), because they change until then.
+  - **`meta.json` and the CSVs** (`gaps`, `events`, `clock`, `stats`) only once the day is closed (past midnight UTC + 15 min), because they change until then.
   - **Never** a `.part` file that's still being written.
-- **One tar per run per day:** new files are streamed straight into rclone as `<day>_000.tar`, then `<day>_001.tar`, and so on, each with its `SHA256SUMS_NNN` inside. No local temp copy is made, and the tar isn't compressed again because the `.bin.zst` files already are. An existing name on Drive is never overwritten; the next number is used instead.
-- **Verification:** the MD5 of the bytes sent must equal the MD5 Drive reports, or nothing is recorded and the next hourly run retries.
+- **One tar per run per day:** new files are streamed straight into rclone as `<day>_000.tar`, then `<day>_001.tar`, and so on, each with its `SHA256SUMS_NNN` inside. No local temp copy is made, and the tar isn't compressed again because the `.bin.zst` files already are. An existing name on the box is never overwritten; the next number is used instead.
+- **Verification:** the MD5 of the bytes sent must equal the MD5 the box computes itself (`md5sum` over SSH), or nothing is recorded and the next hourly run retries.
 - **Late changes:** files that change after upload (a late straggler segment, a rewritten `meta.json`) go up again in the next part.
-- **Local cleanup** (only ever for files verified on Drive):
+- **Local cleanup** (only ever for files verified on the box):
   - **Segments:** a segment verified in an earlier run and older than `KEEP_LOCAL_HOURS` is deleted and leaves a `.pruned` marker. `-1` keeps segments until the whole day goes.
   - **Days:** a closed day is deleted once every file is verified and the day is older than `KEEP_DAYS`. The deploy default for both is `0`; see "Small server".
-- **Drive space:** it refuses to upload if Drive would drop below `MIN_DRIVE_FREE_GB` (5). With a 100–200 GB plan that happens after roughly 1–3 weeks unless the PC pulls data off.
-- **Status:** `<root>/upload_status.json` (last run, last upload, Drive free GB) and `journalctl -u acrec-upload`.
+- **Box space:** it refuses to upload if the box would drop below `MIN_REMOTE_FREE_GB` (5), read with `df` over SSH. At about 11 GB/day, 1 TB lasts roughly 3 months.
+- **Connections:** the box allows 10 simultaneous connections per account. The scripts use at most 2–3 at once.
+- **Status:** `<root>/upload_status.json` (last run, last upload, box free GB) and the logs (`journalctl -u run_recorder`, or `-u acrec-upload`).
 - It never reads or prints the data itself, only names, sizes and counts.
 
 **PC side: `deploy/acrec_pull.sh DEST` (Linux/WSL).**
-- `rclone move` brings the tars down. Drive deletes a tar only after the download's MD5 matches.
-- Each tar is unpacked into `DEST/data/` in name order (so a later part replaces files changed since an earlier one) and checked against its `SHA256SUMS_NNN`.
-- A tar is deleted only once every file in it verifies.
-- Run it at least weekly with a 100–200 GB Drive, e.g. from Windows Task Scheduler via `wsl`. Then read the data with `acrec_read.read_day("DEST/data/2026-11-01", "trades")`.
+- **Default (`PULL_MODE=copy`):** downloads every tar it doesn't have yet. The box keeps everything as the archive. `DEST/.pulled` remembers what's done, so each tar is fetched once.
+- **`PULL_MODE=move`:** also deletes from the box the tars the PC has unpacked and verified. Use it when the box gets full. Nothing is deleted from the box before every file in its tar matched `SHA256SUMS` on the PC.
+- Each tar is unpacked into `DEST/data/` in name order (so a later part replaces files changed since an earlier one) and checked against its `SHA256SUMS_NNN`. A tar is deleted from `DEST/incoming/` only once every file in it verifies.
+- Then read the data with `acrec_read.read_day("DEST/data/2026-11-01", "trades")`.
 
 ### One-time setup
 
-1. **Install rclone** on the server and the PC. The official build is newer than apt's: `curl https://rclone.org/install.sh | sudo bash`.
-2. **Optional: your own Google OAuth client id.** It avoids rclone's shared rate limits. See https://rclone.org/drive/#making-your-own-client-id. Use the same id on the server and the PC.
-3. **Create the Drive remote on the server** (it has no browser):
+1. **Turn on SSH for the box.** In the Hetzner Console, open the Storage Box and enable **SSH support**; also enable **External reachability** if the option is there. Note the username `uXXXXXX`; the host is `uXXXXXX.your-storagebox.de`. It can take a few minutes to become reachable.
+2. **Install rclone** on the server and the PC. The official build is newer than apt's: `curl https://rclone.org/install.sh | sudo bash`.
+3. **Give the server a key for the box** (as root; the `acrec` user reads it):
    ```bash
-   sudo -u acrec RCLONE_CONFIG=/opt/acrec/rclone.conf rclone config
-   # n (new) -> name: gdrive -> storage: drive -> client_id/secret (step 2, or blank)
-   # scope: 3  (drive.file: rclone can only see the files it creates)
-   # Use auto config? n  -> it prints: rclone authorize "drive" "<…>"
+   BOX=uXXXXXX                                      # your Storage Box username
+   ssh-keygen -t ed25519 -N "" -f /opt/acrec/storagebox_ed25519 -C acrec-recorder
+   cat /opt/acrec/storagebox_ed25519.pub | ssh -p23 $BOX@$BOX.your-storagebox.de install-ssh-key   # asks for the box password once
+   ssh-keyscan -p 23 $BOX.your-storagebox.de > /opt/acrec/storagebox_known_hosts                  # pins the box's host key
+   chown acrec /opt/acrec/storagebox_ed25519 /opt/acrec/storagebox_known_hosts && chmod 600 /opt/acrec/storagebox_ed25519
    ```
-   Run that `rclone authorize …` command on the PC. A browser opens; log in to your Google account and paste the token it prints back into the server prompt.
-4. **Create the same remote on the PC** with plain `rclone config` (the browser works there). Use the same client id; with `drive.file` the PC sees the files the server created.
-5. **Install the uploader:**
+4. **Create the rclone remote** `storagebox`:
+   ```bash
+   export RCLONE_CONFIG=/opt/acrec/rclone.conf
+   rclone config create storagebox sftp host=$BOX.your-storagebox.de user=$BOX port=23 \
+     key_file=/opt/acrec/storagebox_ed25519 known_hosts_file=/opt/acrec/storagebox_known_hosts \
+     shell_type=unix md5sum_command=md5sum sha1sum_command=sha1sum
+   chown acrec /opt/acrec/rclone.conf
+   rclone mkdir storagebox:acrec          # no leading "/" in Storage Box paths
+   rclone about storagebox:               # shows the box's total and free space
+   echo test > /tmp/t && rclone copyto /tmp/t storagebox:acrec/t && rclone md5sum storagebox:acrec/t && md5sum /tmp/t && rclone deletefile storagebox:acrec/t
+   ```
+   The two MD5 lines must match: that's the check the uploader relies on.
+5. **On the PC**, do the same with its own key: run steps 3–4 with paths in your home folder, e.g. `~/.ssh/storagebox_ed25519`. `install-ssh-key` adds keys without removing the server's.
+6. **Install the uploader:**
    ```bash
    sudo cp deploy/acrec_upload.sh deploy/upload.env /opt/acrec/
-   sudo chmod +x /opt/acrec/acrec_upload.sh && sudo chown acrec /opt/acrec/rclone.conf
-   sudo cp deploy/acrec-upload.service deploy/acrec-upload.timer /etc/systemd/system/
-   sudo systemctl daemon-reload && sudo systemctl enable --now acrec-upload.timer
-   sudo systemctl start acrec-upload   # one run now; check journalctl -u acrec-upload
+   sudo chmod +x /opt/acrec/acrec_upload.sh
+   sudo -u acrec env RCLONE_CONFIG=/opt/acrec/rclone.conf /opt/acrec/acrec_upload.sh /opt/acrec/upload.env   # one run by hand
    ```
-   **Or use one script for both** instead of `recorder.service` + the timer (use one setup or the other, not both):
+   Then **either** use one script for recorder + uploads (recommended):
    `deploy/run_recorder.sh` starts the recorder, restarts it if it exits (5 s backoff, doubling to 5 min on repeated quick failures), and runs `acrec_upload.sh` every hour at :30 UTC. Ctrl-C or SIGTERM stops it cleanly; the recorder gets up to 60 s to close its files.
    ```bash
    sudo cp deploy/run_recorder.sh /opt/acrec/ && sudo chmod +x /opt/acrec/run_recorder.sh
-   # as a service:
    sudo cp deploy/run_recorder.service /etc/systemd/system/ && sudo systemctl daemon-reload
    sudo systemctl enable --now run_recorder
-   # or by hand (no systemd, e.g. WSL):
+   # or by hand (no systemd):
    RCLONE_CONFIG=/opt/acrec/rclone.conf nohup /opt/acrec/run_recorder.sh >> /opt/acrec/run_recorder.log 2>&1 &
    ```
    Paths come from the environment: `RECORDER`, `CONFIG`, `UPLOAD`, `UPLOAD_ENV`, `UPLOAD_MINUTE`, plus `UPLOAD_ENABLED=0` to run the recorder only.
-6. **Test the whole path once before the real holdout starts:** after the first full hour, check that `<day>_000.tar` appears on Drive and the segment is replaced by a `.pruned` marker on the next run. Then run `acrec_pull.sh` on the PC and confirm it reports "unpacked and verified".
+   **Or** `recorder.service` plus `acrec-upload.service` and `acrec-upload.timer` (`systemctl enable --now acrec-upload.timer`). Use one setup or the other, not both.
+7. **Test the whole path once before the real holdout starts:** after the first full hour, check `rclone lsf storagebox:acrec` lists `<day>_000.tar` and that the segment is replaced by a `.pruned` marker on the next run. Then run `acrec_pull.sh` on the PC and confirm it reports "unpacked and verified".
 
-Traffic: 8–16 GB/day is about 0.5 TB/month, well inside Hetzner's 20 TB.
+Traffic: 8–16 GB/day is about 0.5 TB/month, well inside Hetzner's 20 TB; traffic to a Storage Box is free.
 
 ## Status mail every 6 hours
 
@@ -305,7 +318,7 @@ Traffic: 8–16 GB/day is about 0.5 TB/month, well inside Hetzner's 20 TB.
 | **WARN** | heartbeat warnings, fewer connections up than expected, a writer error, an upload error |
 | **OK** | none of the above |
 
-The report shows, for each group, messages/s, connections up, seconds quiet and records dropped. It also shows gaps today, GB written today, disk free, writer-queue fill, the last upload and Drive's free space, plus each local day's size and whether it's been uploaded. It contains counts and states only, never prices. It uses only Python's standard library, so there's nothing to install.
+The report shows, for each group, messages/s, connections up, seconds quiet and records dropped. It also shows gaps today, GB written today, disk free, writer-queue fill, the last upload and the Storage Box's free space, plus each local day's size and whether it's been uploaded. It contains counts and states only, never prices. It uses only Python's standard library, so there's nothing to install.
 
 **Setup (Gmail as sender):**
 1. **App password:** turn on 2-step verification for the sending Google account. Then create an app password at https://myaccount.google.com/apppasswords. Gmail refuses your normal password over SMTP.

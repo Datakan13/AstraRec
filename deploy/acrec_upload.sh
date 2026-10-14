@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# acrec_upload.sh: ship recorder data to Google Drive (rclone) and free local
-# disk. Run hourly (run_recorder.sh or acrec-upload.timer); safe to rerun at any time.
+# acrec_upload.sh: ship recorder data to the Hetzner Storage Box (rclone, SFTP on
+# port 23; any rclone remote works) and free local disk. Run hourly (run_recorder.sh or acrec-upload.timer); safe to rerun at any time.
 #
 #   acrec_upload.sh [/opt/acrec/upload.env]
 #
@@ -11,8 +11,8 @@
 #     UTC + GRACE_MIN), so they go up once it has.
 #   - how: new or changed files are streamed as ONE tar straight into rclone (no
 #     local temp copy), with SHA256SUMS_NNN inside. Names: <day>_000.tar,
-#     <day>_001.tar, ... An existing name on Drive is never overwritten.
-#   - check: the tar's MD5 as streamed must equal the MD5 Drive reports, or nothing
+#     <day>_001.tar, ... An existing name on the remote is never overwritten.
+#   - check: the tar's MD5 as streamed must equal the MD5 the remote reports, or nothing
 #     is recorded and the next run retries. Verified files go into <day>/.uploaded.
 #   - local cleanup: a segment verified in an EARLIER run and older than
 #     KEEP_LOCAL_HOURS is deleted and replaced by an empty "<name>.pruned" marker
@@ -28,13 +28,14 @@ ENV_FILE="${1:-/opt/acrec/upload.env}"
 # shellcheck source=/dev/null
 [[ -f "$ENV_FILE" ]] && source "$ENV_FILE"
 : "${ROOT:=/data/acrec}"            # recorder data root (recorder.json "root")
-: "${REMOTE:=gdrive:acrec}"         # rclone remote:path
+: "${REMOTE:=storagebox:acrec}"     # rclone remote:path (Storage Box: no leading / in the path)
 : "${KEEP_DAYS:=7}"                 # delete a closed, fully verified day this many days after it ends
 : "${KEEP_LOCAL_HOURS:=-1}"         # >=0: also delete verified segments this old (-1 = keep until the day goes)
 : "${GRACE_MIN:=15}"                # wait this long after midnight UTC (recorder closes at +2 min)
-: "${MIN_DRIVE_FREE_GB:=5}"         # refuse to upload when Drive would end below this
+: "${MIN_REMOTE_FREE_GB:=${MIN_DRIVE_FREE_GB:-5}}"   # refuse to upload when the remote would end below this
 : "${RCLONE:=rclone}"
-: "${RCLONE_FLAGS:=--retries 5 --low-level-retries 20 --stats 0}"
+# The Storage Box allows 10 simultaneous connections per account: stay well below.
+: "${RCLONE_FLAGS:=--retries 5 --low-level-retries 20 --stats 0 --checkers 2 --transfers 1}"
 
 log() { echo "$(date -u +%FT%TZ) acrec_upload: $*"; }
 die() { log "ERROR: $*"; write_status "error" "$*"; exit 1; }
@@ -43,8 +44,8 @@ STATUS="$ROOT/upload_status.json"
 LAST_UPLOAD=""
 write_status() {   # state, message: for monitoring next to heartbeat.json
   local tmp="$STATUS.tmp"
-  printf '{"utc": "%s", "state": "%s", "message": "%s", "last_upload": "%s", "drive_free_gb": %s}\n' \
-    "$(date -u +%FT%TZ)" "$1" "${2//\"/\'}" "$LAST_UPLOAD" "${DRIVE_FREE_GB:-null}" > "$tmp" && mv -f "$tmp" "$STATUS"
+  printf '{"utc": "%s", "state": "%s", "message": "%s", "last_upload": "%s", "remote_free_gb": %s}\n' \
+    "$(date -u +%FT%TZ)" "$1" "${2//\"/\'}" "$LAST_UPLOAD" "${REMOTE_FREE_GB:-null}" > "$tmp" && mv -f "$tmp" "$STATUS"
 }
 
 command -v "$RCLONE" >/dev/null || die "rclone not found"
@@ -57,7 +58,7 @@ flock -n 9 || { log "another run is active; exiting"; exit 0; }
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-drive_free_gb() {
+remote_free_gb() {   # -1 if the remote can't report it
   "$RCLONE" about "$REMOTE" --json 2>/dev/null | python3 -I -c 'import json,sys; d=json.load(sys.stdin); print(int(d.get("free", -1))//10**9 if "free" in d else -1)' 2>/dev/null || echo -1
 }
 
@@ -110,7 +111,7 @@ for dir in "$ROOT"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
 
   if [[ -s "$WORK/todo" ]]; then
     # Next part number after the highest one already used for this day; an
-    # existing name on Drive is skipped, never overwritten.
+    # existing name on the remote is skipped, never overwritten.
     part=$(awk '{n = $5; sub(/.*_/, "", n); sub(/\.tar$/, "", n); n += 0; if (n >= max) max = n + 1} END {print max + 0}' "$manifest")
     tarname=$(printf '%s_%03d.tar' "$day" "$part")
     while [[ -n "$("$RCLONE" lsf --files-only --include "/$tarname" "$REMOTE" 2>/dev/null)" ]]; do
@@ -120,9 +121,9 @@ for dir in "$ROOT"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
     nfiles=$(wc -l < "$WORK/todo")
     bytes=$(awk '{s += $2} END {print s + 0}' "$WORK/todo")
 
-    DRIVE_FREE_GB=$(drive_free_gb)
-    if (( DRIVE_FREE_GB >= 0 && DRIVE_FREE_GB * 10**9 - bytes < MIN_DRIVE_FREE_GB * 10**9 )); then
-      die "Drive has ${DRIVE_FREE_GB} GB free; $tarname needs $((bytes / 10**9 + 1)) GB + ${MIN_DRIVE_FREE_GB} GB reserve. Pull data to the PC (acrec_pull.sh) or free space."
+    REMOTE_FREE_GB=$(remote_free_gb)
+    if (( REMOTE_FREE_GB >= 0 && REMOTE_FREE_GB * 10**9 - bytes < MIN_REMOTE_FREE_GB * 10**9 )); then
+      die "$REMOTE has ${REMOTE_FREE_GB} GB free; $tarname needs $((bytes / 10**9 + 1)) GB + ${MIN_REMOTE_FREE_GB} GB reserve. Move data off it (acrec_pull.sh PULL_MODE=move) or free space."
     fi
 
     # Checksums of exactly the files going into this tar.
@@ -151,7 +152,7 @@ for dir in "$ROOT"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
 
     local_md5=$(cat "$WORK/md5")
     remote_md5=$("$RCLONE" md5sum "$REMOTE/$tarname" 2>/dev/null | awk '{print $1}')
-    [[ -n "$local_md5" && "$local_md5" == "$remote_md5" ]] || die "$day: MD5 mismatch for $tarname (local $local_md5, Drive ${remote_md5:-none}); will retry"
+    [[ -n "$local_md5" && "$local_md5" == "$remote_md5" ]] || die "$day: MD5 mismatch for $tarname (local $local_md5, remote ${remote_md5:-none}); will retry"
 
     # Record each verified file (atomically).
     cp "$manifest" "$manifest.tmp"
@@ -162,18 +163,18 @@ for dir in "$ROOT"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
     mv -f "$manifest.tmp" "$manifest"
     LAST_UPLOAD="$tarname"
     uploaded=$((uploaded + 1))
-    log "$day: $tarname verified on Drive (md5 $local_md5)"
+    log "$day: $tarname verified on $REMOTE (md5 $local_md5)"
     continue   # never delete a day in the same run as an upload
   fi
 
   # 3. Closed, everything verified, old enough: delete the whole day folder.
   if (( closed )) && ! compgen -G "$dir/*.part" >/dev/null && (( now >= day_end + KEEP_DAYS * 86400 )); then
-    log "$day: all files verified on Drive; deleting local copy (KEEP_DAYS=$KEEP_DAYS)"
+    log "$day: all files verified on $REMOTE; deleting local copy (KEEP_DAYS=$KEEP_DAYS)"
     rm -rf -- "$dir"
     pruned=$((pruned + 1))
   fi
 done
 
-DRIVE_FREE_GB=$(drive_free_gb)
-log "done: $uploaded uploaded, $segpruned segments and $pruned days deleted locally, $waiting waiting; Drive free ${DRIVE_FREE_GB} GB"
+REMOTE_FREE_GB=$(remote_free_gb)
+log "done: $uploaded uploaded, $segpruned segments and $pruned days deleted locally, $waiting waiting; remote free ${REMOTE_FREE_GB} GB"
 write_status "ok" "$uploaded uploaded, $segpruned segments + $pruned days deleted locally, $waiting waiting"

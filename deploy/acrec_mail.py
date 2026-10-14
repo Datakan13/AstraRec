@@ -184,7 +184,8 @@ def build_report(env, note=None):
         lines.append("Upload: no upload_status.json yet")
     else:
         lines.append(f"Upload {up.get('utc', '?')}: {up.get('state')} - {up.get('message')}")
-        lines.append(f"  last upload {up.get('last_upload') or '-'}, Drive free {up.get('drive_free_gb')} GB")
+        free = up.get("remote_free_gb", up.get("drive_free_gb"))
+        lines.append(f"  last upload {up.get('last_upload') or '-'}, Storage Box free {'?' if free in (None, -1) else free} GB")
         if up.get("state") == "error":
             problems.append(f"upload error: {up.get('message')}")
 

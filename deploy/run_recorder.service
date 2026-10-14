@@ -1,7 +1,7 @@
 # Alternative to recorder.service + acrec-upload.timer: one unit running
-# run_recorder.sh (recorder + hourly Drive upload). Use one setup or the other.
+# run_recorder.sh (recorder + hourly Storage Box upload). Use one setup or the other.
 [Unit]
-Description=Market-data recorder with hourly Google Drive upload
+Description=Market-data recorder with hourly Storage Box upload
 After=network-online.target
 Wants=network-online.target
 

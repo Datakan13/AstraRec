@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # run_recorder.sh: one script for everything. Starts the recorder, restarts it if
-# it ever stops, and runs the Google Drive upload (acrec_upload.sh) every hour
+# it ever stops, and runs the Storage Box upload (acrec_upload.sh) every hour
 # at :30 UTC. Ctrl-C / SIGTERM stops everything cleanly.
 #
 #   run_recorder.sh                          # defaults below
@@ -14,7 +14,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${RECORDER:=/opt/acrec/recorder}"           # recorder binary
 : "${CONFIG:=/opt/acrec/recorder.json}"        # recorder config
-: "${UPLOAD:=$HERE/acrec_upload.sh}"           # Drive uploader
+: "${UPLOAD:=$HERE/acrec_upload.sh}"           # uploader
 : "${UPLOAD_ENV:=/opt/acrec/upload.env}"       # uploader settings
 : "${UPLOAD_MINUTE:=30}"                       # upload every hour at this minute (UTC)
 : "${UPLOAD_ENABLED:=1}"                       # 0 = only run the recorder
