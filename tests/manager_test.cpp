@@ -1,6 +1,9 @@
 // Connection-manager tests with a fake transport and clock: sharding, paths,
 // subscriptions, disconnect/reconnect rows, stalls, rotation overlap,
 // listings/delistings and writer backpressure. No network.
+#include <unistd.h>
+
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -13,6 +16,7 @@
 
 #include "recorder/recorder.hpp"
 #include "recorder/storage.hpp"
+#include "recorder/sysstats.hpp"
 #include "recorder/timeutil.hpp"
 #include "recorder/writer_core.hpp"
 
@@ -332,6 +336,104 @@ void test_backpressure() {
   CHECK(hb.find("100.5") == std::string::npos);   // heartbeat never shows prices
 }
 
+void write_proc(const std::string& dir, uint64_t user, uint64_t idle, uint64_t iowait, uint64_t steal, uint64_t proc_ticks,
+                uint64_t rx, uint64_t out_segs, uint64_t retrans) {
+  fs::create_directories(dir + "/self");
+  fs::create_directories(dir + "/net");
+  std::ofstream(dir + "/stat") << "cpu  " << user << " 0 0 " << idle << " " << iowait << " 0 0 " << steal << " 0 0\ncpu0 1 2 3\n";
+  // pid (comm with spaces) state ... utime=14 stime=15 ... threads=20
+  std::ofstream(dir + "/self/stat") << "42 (rec order) S 1 1 1 0 -1 0 0 0 0 0 " << proc_ticks << " 0 0 0 20 0 7 0 100\n";
+  std::ofstream(dir + "/self/status") << "Name:\trecorder\nVmRSS:\t  153600 kB\nThreads:\t7\n";
+  std::ofstream(dir + "/meminfo") << "MemTotal: 949248 kB\nMemAvailable: 512000 kB\nSwapTotal: 2097152 kB\nSwapFree: 1572864 kB\n";
+  std::ofstream(dir + "/loadavg") << "0.75 0.50 0.25 1/100 4242\n";
+  std::ofstream(dir + "/net/dev") << "Inter-|   Receive\n face |bytes packets\n    lo: 999999 1 0\n  eth0: " << rx << " 10 0\n";
+  std::ofstream(dir + "/net/snmp") << "Ip: Forwarding\nIp: 1\nTcp: RtoAlgorithm OutSegs RetransSegs InErrs\nTcp: 1 " << out_segs << " "
+                                   << retrans << " 0\n";
+}
+
+void test_sysstats() {
+  const std::string dir = (fs::temp_directory_path() / "acrec_fakeproc").string();
+  fs::remove_all(dir);
+  SysSampler sampler(dir);
+  write_proc(dir, 1000, 8000, 100, 50, 500, 1000000, 10000, 10);
+  const SysSnapshot a = sampler.sample(0);
+  // 60 s later: +600 user, +300 idle (incl. +50 iowait), +100 steal of 1000 ticks total
+  write_proc(dir, 1600, 8250, 150, 150, 500 + 3000, 1000000 + 75000000, 20000, 30);
+  const SysSnapshot b = sampler.sample(60000);
+  const SysRates r = SysSampler::rates(a, b);
+  CHECK(std::abs(r.sys_cpu_busy_pct - 70.0) < 1e-9);    // 1000 ticks: 600 user + 100 steal busy, 250 idle + 50 iowait
+  CHECK(std::abs(r.sys_iowait_pct - 5.0) < 1e-9);
+  CHECK(std::abs(r.sys_steal_pct - 10.0) < 1e-9);
+  CHECK(std::abs(r.proc_cpu_pct - 3000.0 / sysconf(_SC_CLK_TCK) / 60 * 100) < 1e-6);
+  CHECK(r.proc_threads == 7 && std::abs(r.proc_rss_mb - 150) < 1e-9);
+  CHECK(std::abs(r.mem_avail_mb - 500) < 1e-9 && std::abs(r.swap_used_mb - 512) < 1e-9);
+  CHECK(std::abs(r.load1 - 0.75) < 1e-9);
+  CHECK(std::abs(r.net_rx_mbps - 10.0) < 1e-9);          // 75 MB in 60 s, lo excluded
+  CHECK(std::abs(r.tcp_retrans_pct - 0.2) < 1e-9);       // 20 of 10000 segments
+  // Missing files: fields unknown, no crash
+  const SysRates none = SysSampler::rates(SysSampler("/nonexistent").sample(0), SysSampler("/nonexistent").sample(1000));
+  CHECK(none.sys_steal_pct < 0 && none.proc_cpu_pct < 0 && none.net_rx_mbps < 0);
+  // The real /proc of this machine parses
+  SysSampler real;
+  const SysSnapshot r0 = real.sample(0);
+  CHECK(r0.cpu_ok && r0.proc_ok && r0.net_ok && r0.tcp_ok);
+  const SysRates rr = SysSampler::rates(r0, real.sample(1000));
+  CHECK(rr.proc_threads >= 1 && rr.proc_rss_mb > 0 && rr.mem_avail_mb > 0);
+  fs::remove_all(dir);
+}
+
+void test_stats_csv() {
+  World w("stats");
+  w.begin();
+  WriterStatus ws;
+  ws.queue_capacity = 65536;
+  SysRates sys;
+  sys.sys_steal_pct = 12.5;
+  sys.proc_cpu_pct = 40;
+  w.rec->write_stats(ws, 10.0, sys);    // first row: covers startup
+  const int c = w.net.find("btcusdt@aggTrade");
+  for (uint64_t a = 1; a <= 120; ++a) w.net.deliver(c, trade("BTCUSDT", a, kDay0 + 3600000 + static_cast<int64_t>(a)));
+  w.net.drop(c);
+  w.run(2000);                          // disconnect, backoff, reconnect
+  w.net.deliver(w.net.find("btcusdt@aggTrade"), trade("BTCUSDT", 121, kDay0 + 3700000));
+  w.run(58000, 1000);                   // reconnect row logged; one minute in total
+  ws.queue_fill_max = 1234;
+  ws.flush_ms_max = 87;
+  w.rec->write_stats(ws, 9.5, sys);
+  w.writer->storage().end_frames();
+  auto rows = [&] {
+    std::vector<std::string> v;
+    std::ifstream in(w.day() + "stats.csv");
+    for (std::string l; std::getline(in, l);) v.push_back(l);
+    return v;
+  }();
+  CHECK(rows.size() == 3);
+  if (rows.size() != 3) return;
+  CHECK(rows[0] == Recorder::stats_header());
+  auto cols = [](const std::string& line) {
+    std::vector<std::string> v;
+    std::stringstream ss(line);
+    for (std::string x; std::getline(ss, x, ',');) v.push_back(x);
+    if (!line.empty() && line.back() == ',') v.push_back("");
+    return v;
+  };
+  const auto h = cols(rows[0]), r = cols(rows[2]);
+  CHECK(h.size() == r.size());
+  auto at = [&](const std::string& name) {
+    for (size_t i = 0; i < h.size(); ++i)
+      if (h[i] == name) return r[i];
+    return std::string("?");
+  };
+  CHECK(std::abs(std::stod(at("interval_s")) - 60.0) < 0.5);
+  CHECK(std::abs(std::stod(at("trades_msgs_per_s")) - 121 / 60.0) < 0.05);
+  CHECK(at("trades_conns_up") == "2" && at("trades_conns_total") == "2");
+  CHECK(at("disconnects") == "1" && at("reconnects") == "1" && at("stalls") == "0");
+  CHECK(at("queue_fill_max") == "1234" && at("flush_ms_max") == "87");
+  CHECK(at("sys_steal_pct") == "12.5" && at("proc_cpu_pct") == "40.0" && at("disk_free_gb") == "9.50");
+  CHECK(at("net_rx_mbps").empty());     // unknown stays empty, not 0
+  CHECK(rows[2].find("100.5") == std::string::npos);   // no prices
+}
+
 }  // namespace
 
 int main() {
@@ -341,6 +443,8 @@ int main() {
   test_rotation();
   test_listing_delisting();
   test_backpressure();
+  test_sysstats();
+  test_stats_csv();
   if (failures) { std::cerr << failures << " check(s) failed\n"; return 1; }
   std::cout << "all manager tests passed\n";
   return 0;

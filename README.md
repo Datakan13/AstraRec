@@ -106,6 +106,45 @@ cmake -S . -B build -DHAR_BUILD_LIVE=ON -DRECORDER_BUILD_LIVE=ON && cmake --buil
 Record layouts are in `include/recorder/records.hpp`, mirrored in `python/acrec_read.py`.
 Each file starts with the 32-byte header `ACREC`, version 1, group id, record size and yyyymmdd.
 
+## Diagnosing problems: `stats.csv`
+
+Every minute the recorder appends one row to `<day>/stats.csv`. It's uploaded with the day's other files, so the full history ends up on the PC. Counts and states only, never prices. Empty cell = unknown.
+
+| Columns | What they show |
+|---|---|
+| `<group>_msgs_per_s`, `_conns_up`/`_conns_total`, `_dropped`, `_quiet_s` | per group: rate over the minute, live connections, records dropped in the minute, seconds since the last message |
+| `disconnects`, `reconnects`, `stalls`, `parse_errors` | events in the minute (details and exchange times in `gaps.csv`) |
+| `queue_fill`, `queue_fill_max`, `queue_capacity` | writer queue now and its peak in the minute |
+| `flush_ms_max` | slowest frame end + fsync in the minute: how long the disk took |
+| `bytes_written_today`, `gaps_today`, `disk_free_gb` | running totals |
+| `proc_cpu_pct`, `proc_rss_mb`, `proc_threads` | the recorder process: CPU (100 = one full core), memory |
+| `sys_cpu_busy_pct`, `sys_iowait_pct`, `sys_steal_pct`, `load1` | the machine: busy CPU, CPU waiting on disk, CPU taken by the cloud host |
+| `mem_avail_mb`, `swap_used_mb` | free memory, swap in use |
+| `net_rx_mbps`, `tcp_retrans_pct` | received traffic, share of sent TCP segments retransmitted |
+
+**Reading it: hardware or software?**
+
+| Symptom (in the same minutes) | Likely cause |
+|---|---|
+| `queue_fill_max` climbing, `proc_cpu_pct` near 100, `sys_steal_pct` low | the recorder needs more CPU than the machine has (load spike or code), so a bigger server is needed |
+| `queue_fill_max` climbing, `sys_steal_pct` high (> ~20) | **host**: the cloud provider is giving the shared vCPU to other tenants |
+| `flush_ms_max` in seconds, `sys_iowait_pct` high | **disk** is slow |
+| `mem_avail_mb` falling, `swap_used_mb` rising, `proc_rss_mb` steady | something else on the server is using memory |
+| `proc_rss_mb` rising day after day | a **memory leak in the recorder** (software) |
+| `disconnects` with `tcp_retrans_pct` up and `net_rx_mbps` dropping | **network** between the server and Binance |
+| `disconnects` with clean TCP, every group at once | Binance closed connections (maintenance, their limits) |
+| `disconnects` with clean TCP, one connection repeatedly | that connection's streams or the software: check `gaps.csv` reasons and `recorder.log` |
+| `stalls` with `msgs_per_s` 0 for one group only | that group's streams went quiet (Binance side) |
+| `*_dropped` > 0 | records lost: always together with a full queue, so look at the queue rows above |
+
+```python
+st = ar.read_stats("DEST/data/2026-11-01")
+st[["bbo_msgs_per_s", "queue_fill_max", "proc_cpu_pct", "sys_steal_pct"]].plot(subplots=True)
+st[st.disconnects > 0]          # the minutes with disconnects
+```
+
+The status mail summarizes the last 6 hours of these rows: averages and minimums per group, drops, disconnects, the peak queue, the slowest flush, CPU, steal, memory and retransmits. It turns WARN on drops, a queue more than half full, stalls or more than 6 disconnects, or a flush over 5 s.
+
 ## Reading
 
 ```python

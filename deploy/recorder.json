@@ -20,6 +20,7 @@
   "reconnect_max_s": 60,
   "day_close_grace_s": 120,
   "heartbeat_interval_s": 10,
+  "stats_interval_s": 60,
   "min_disk_free_gb": 3,
   "group_stall_warn_s": 300,
   "rest_host": "fapi.binance.com",

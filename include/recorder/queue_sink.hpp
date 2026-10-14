@@ -33,6 +33,8 @@ class QueueSink : public RecordSink {
   // Drains everything queued so far, then finishes the writer (closes all files).
   void stop();
   WriterStatus status();
+  // Like status(), but also returns the interval peaks and resets them (for stats.csv).
+  WriterStatus take_interval();
 
  private:
   struct Item {
@@ -51,6 +53,7 @@ class QueueSink : public RecordSink {
   std::atomic<bool> stopping_{false};
   std::thread thread_;
   bool above_high_water_ = false;
+  std::atomic<size_t> fill_max_{0};
   std::mutex status_mu_;
   WriterStatus status_;
 };

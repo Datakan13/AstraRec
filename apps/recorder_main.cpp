@@ -22,6 +22,7 @@
 #include "recorder/queue_sink.hpp"
 #include "recorder/recorder.hpp"
 #include "recorder/storage.hpp"
+#include "recorder/sysstats.hpp"
 #include "recorder/timeutil.hpp"
 #include "recorder/writer_core.hpp"
 
@@ -95,9 +96,18 @@ int main(int argc, char** argv) {
 
   const std::string hb_path = (std::filesystem::path(cfg.root) / "heartbeat.json").string();
   int64_t next_hb = 0;
+  acrec::SysSampler sampler;
+  acrec::SysSnapshot last_sys = sampler.sample(clock.mono_ms());
+  int64_t next_stats = clock.mono_ms() + cfg.stats_interval_s * 1000LL;
   while (!g_stop.load()) {
     rec.tick();
     const int64_t now = clock.mono_ms();
+    if (cfg.stats_interval_s > 0 && now >= next_stats) {
+      next_stats = now + cfg.stats_interval_s * 1000LL;
+      const acrec::SysSnapshot sys = sampler.sample(now);
+      rec.write_stats(sink.take_interval(), disk_free_gb(cfg.root), acrec::SysSampler::rates(last_sys, sys));
+      last_sys = sys;
+    }
     if (now >= next_hb) {
       next_hb = now + cfg.heartbeat_interval_s * 1000LL;
       const double free_gb = disk_free_gb(cfg.root);

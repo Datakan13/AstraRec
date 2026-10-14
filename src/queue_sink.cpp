@@ -1,5 +1,6 @@
 #include "recorder/queue_sink.hpp"
 
+#include <algorithm>
 #include <chrono>
 
 #include <AstraLib/Time/timeNow.hpp>
@@ -54,6 +55,8 @@ void QueueSink::run() {
   Item it;
   for (;;) {
     int n = 0;
+    if (const size_t f = ring_->approxSize(); f > fill_max_.load(std::memory_order_relaxed))
+      fill_max_.store(f, std::memory_order_relaxed);   // peak before draining
     while (n < 4096 && ring_->tryDequeue(it)) {
       handle(it);
       ++n;
@@ -82,6 +85,7 @@ void QueueSink::run() {
       status_.queue_fill = fill;
       status_.queue_capacity = kCapacity;
       status_.last_error = writer_.storage().last_error();
+      status_.flush_ms_max = std::max(status_.flush_ms_max, writer_.take_flush_ms_max());
     }
     if (n == 0) {
       if (stopping_.load(std::memory_order_acquire) && ring_->approxSize() == 0) break;
@@ -97,6 +101,14 @@ void QueueSink::stop() {
   if (!thread_.joinable()) return;
   stopping_.store(true, std::memory_order_release);
   thread_.join();
+}
+
+WriterStatus QueueSink::take_interval() {
+  std::lock_guard<std::mutex> g(status_mu_);
+  WriterStatus s = status_;
+  s.queue_fill_max = fill_max_.exchange(0, std::memory_order_relaxed);
+  status_.flush_ms_max = 0;
+  return s;
 }
 
 WriterStatus QueueSink::status() {

@@ -1,6 +1,7 @@
 #include "recorder/recorder.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <cctype>
 #include <cmath>
 #include <sstream>
@@ -172,6 +173,7 @@ void Recorder::lost(Shard& s, std::unique_ptr<Conn> c, const std::string& kind, 
   c->ws->close();
   const uint64_t last = c->last_E.load();
   if (!kind.empty()) gap_rows(s, c->id, kind, reason, last, std::nullopt, utc);
+  if (kind == "disconnect") ++st_disconnects_;
   if (last) s.last_good_E = last;
   log_.warn(s.name + ": connection " + std::to_string(c->id) + " lost (" + reason + ")");
   if (s.next && !s.next->closed.load()) {
@@ -228,6 +230,7 @@ void Recorder::check_shard(Shard& s, int64_t now, int64_t utc) {
   // First data after a reconnect closes the gap window.
   if (s.reconnecting && a.first_E.load()) {
     gap_rows(s, a.id, "reconnect", "data resumed", s.last_good_E, a.first_E.load(), utc);
+    ++st_reconnects_;
     s.reconnecting = false;
     s.backoff_s = 0;
   }
@@ -235,6 +238,7 @@ void Recorder::check_shard(Shard& s, int64_t now, int64_t utc) {
   // Stall: no message at all for the shard's threshold.
   const int64_t since = std::max(a.last_msg_mono.load(), a.opened_mono);
   if (now - since > stall_s(s) * 1000LL) {
+    ++st_stalls_;
     gap_rows(s, a.id, "stall", "no message for " + std::to_string((now - since) / 1000) + "s; reconnecting", a.last_E.load(),
              std::nullopt, utc);
     lost(s, std::move(s.active), "", "stall", now, utc);
@@ -499,6 +503,7 @@ void Recorder::tick() {
       if (pe > c->parse_errors_logged) {
         gap_rows(*s, c->id, "parse_error", std::to_string(pe - c->parse_errors_logged) + " message(s) not recorded: " + parse_error,
                  std::nullopt, std::nullopt, utc);
+        st_parse_errors_ += pe - c->parse_errors_logged;
         c->parse_errors_logged = pe;
       }
     }
@@ -529,8 +534,12 @@ std::vector<std::string> Recorder::warnings(double disk_free_gb) {
   std::vector<std::string> w;
   const int64_t now = clock_.mono_ms();
   if (disk_free_gb >= 0 && disk_free_gb < cfg_.min_disk_free_gb)
-    w.push_back("disk free " + std::to_string(static_cast<int>(disk_free_gb)) + " GB < " +
-                std::to_string(static_cast<int>(cfg_.min_disk_free_gb)) + " GB");
+  {
+    char buf[160];
+    std::snprintf(buf, sizeof buf, "disk free %.2f GB < %.1f GB at %s", disk_free_gb, cfg_.min_disk_free_gb,
+                  cfg_.root.c_str());
+    w.push_back(buf);
+  }
   for (int gi = 0; gi < kGroupCount; ++gi) {
     if (!cfg_.groups[gi]) continue;
     const int64_t last = group_last_mono_[gi].load();
@@ -580,6 +589,59 @@ std::string Recorder::heartbeat_json(const WriterStatus& ws, double disk_free_gb
   for (size_t i = 0; i < w.size(); ++i) o << (i ? ", " : "") << json_str(w[i]);
   o << "]\n}\n";
   return o.str();
+}
+
+std::string Recorder::stats_header() {
+  std::string h = "utc_time,interval_s,uptime_s";
+  for (int gi = 0; gi < kGroupCount; ++gi) {
+    const std::string g = group_name(group_at(gi));
+    h += "," + g + "_msgs_per_s," + g + "_conns_up," + g + "_conns_total," + g + "_dropped," + g + "_quiet_s";
+  }
+  h += ",disconnects,reconnects,stalls,parse_errors,queue_fill,queue_fill_max,queue_capacity,flush_ms_max,"
+       "bytes_written_today,gaps_today,disk_free_gb,proc_cpu_pct,proc_rss_mb,proc_threads,sys_cpu_busy_pct,"
+       "sys_iowait_pct,sys_steal_pct,load1,mem_avail_mb,swap_used_mb,net_rx_mbps,tcp_retrans_pct";
+  return h;
+}
+
+void Recorder::write_stats(const WriterStatus& ws, double disk_free_gb, const SysRates& sys) {
+  const int64_t now = clock_.mono_ms(), utc = clock_.utc_ms();
+  const double dt = std::max<int64_t>(1, now - (st_last_mono_ ? st_last_mono_ : start_mono_)) / 1000.0;
+  st_last_mono_ = now;
+  char buf[96];
+  auto num = [&](double v, int dp) {
+    if (v < 0) return std::string("");   // unknown (e.g. /proc field missing)
+    std::snprintf(buf, sizeof buf, "%.*f", dp, v);
+    return std::string(buf);
+  };
+  std::string row = num(dt, 1) + "," + std::to_string((now - start_mono_) / 1000);
+  for (int gi = 0; gi < kGroupCount; ++gi) {
+    const Group g = group_at(gi);
+    int up = 0, total = 0;
+    for (auto& s : shards_)
+      if (std::find(s->groups.begin(), s->groups.end(), g) != s->groups.end()) {
+        ++total;
+        if (s->active && !s->active->closed.load()) ++up;
+      }
+    const uint64_t recs = group_records_[gi].load();
+    const uint64_t dropped = dropped_total_[gi] + dropped_[gi].load();
+    const int64_t last_mono = group_last_mono_[gi].load();
+    row += "," + num((recs - st_records_[gi]) / dt, 1) + "," + std::to_string(up) + "," + std::to_string(total) + "," +
+           std::to_string(dropped - st_dropped_[gi]) + "," + (last_mono ? std::to_string((now - last_mono) / 1000) : "");
+    st_records_[gi] = recs;
+    st_dropped_[gi] = dropped;
+  }
+  row += "," + std::to_string(st_disconnects_) + "," + std::to_string(st_reconnects_) + "," + std::to_string(st_stalls_) +
+         "," + std::to_string(st_parse_errors_);
+  st_disconnects_ = st_reconnects_ = st_stalls_ = st_parse_errors_ = 0;
+  row += "," + std::to_string(ws.queue_fill) + "," + std::to_string(ws.queue_fill_max) + "," +
+         std::to_string(ws.queue_capacity) + "," + std::to_string(ws.flush_ms_max) + "," +
+         std::to_string(ws.bytes_today) + "," + std::to_string(ws.gaps_today) + "," + num(disk_free_gb, 2);
+  row += "," + num(sys.proc_cpu_pct, 1) + "," + num(sys.proc_rss_mb, 1) + "," +
+         (sys.proc_threads >= 0 ? std::to_string(sys.proc_threads) : "") + "," + num(sys.sys_cpu_busy_pct, 1) + "," +
+         num(sys.sys_iowait_pct, 1) + "," + num(sys.sys_steal_pct, 1) + "," + num(sys.load1, 2) + "," +
+         num(sys.mem_avail_mb, 0) + "," + num(sys.swap_used_mb, 0) + "," + num(sys.net_rx_mbps, 2) + "," +
+         num(sys.tcp_retrans_pct, 3);
+  sink_.post([utc, row](WriterCore& w) { w.storage().stats(utc, stats_header(), row); });
 }
 
 std::vector<Recorder::ShardView> Recorder::shards() const {

@@ -80,6 +80,8 @@ class Storage {
   void gap(const GapRow& row);
   void event(const EventRow& row);
   void clock(const ClockRow& row);
+  // One row of <day>/stats.csv (the header is written when the file is new).
+  void stats(int64_t utc_ms, const std::string& header, const std::string& row);
 
   void set_depth_set(std::vector<std::string> symbols);
   // Gives ids to symbols that started trading (listings, tick changes) in every
@@ -109,7 +111,7 @@ class Storage {
     std::unique_ptr<SegmentWriter> seg[kGroupCount];
     std::unordered_map<uint32_t, uint32_t> local;   // global key -> id
     std::vector<uint32_t> keys;                      // id -> global key
-    Csv gaps, events, clock;
+    Csv gaps, events, clock, stats;
     uint64_t gap_rows = 0;
   };
 

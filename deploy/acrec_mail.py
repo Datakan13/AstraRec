@@ -71,6 +71,47 @@ def local_days(root):
     return days
 
 
+def stats_summary(root, hours, now):
+    """Max/min/sum over the last `hours` of stats.csv rows (today's and yesterday's files)."""
+    import csv
+    cutoff = datetime.fromtimestamp(now - hours * 3600, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    rows = []
+    for day in sorted(d for d in os.listdir(root) if len(d) == 10 and d[4] == "-")[-2:] if os.path.isdir(root) else []:
+        path = os.path.join(root, day, "stats.csv")
+        if os.path.exists(path):
+            with open(path, newline="") as f:
+                rows += [r for r in csv.DictReader(f) if r.get("utc_time", "") >= cutoff]
+    if not rows:
+        return None
+
+    def vals(col):
+        out = []
+        for r in rows:
+            try:
+                out.append(float(r[col]))
+            except (KeyError, ValueError):
+                pass
+        return out
+
+    def agg(col, fn, default=None):
+        v = vals(col)
+        return fn(v) if v else default
+
+    groups = ["bbo", "trades", "depth", "liq", "mark"]
+    return {
+        "rows": len(rows),
+        "msgs_avg": {g: agg(f"{g}_msgs_per_s", lambda v: sum(v) / len(v)) for g in groups},
+        "msgs_min": {g: agg(f"{g}_msgs_per_s", min) for g in groups},
+        "dropped": sum(sum(vals(f"{g}_dropped")) for g in groups),
+        "disconnects": sum(vals("disconnects")), "stalls": sum(vals("stalls")), "parse_errors": sum(vals("parse_errors")),
+        "queue_fill_max": agg("queue_fill_max", max, 0), "queue_capacity": agg("queue_capacity", max, 0),
+        "flush_ms_max": agg("flush_ms_max", max, 0),
+        "proc_cpu_max": agg("proc_cpu_pct", max), "steal_max": agg("sys_steal_pct", max), "iowait_max": agg("sys_iowait_pct", max),
+        "mem_avail_min": agg("mem_avail_mb", min), "swap_used_max": agg("swap_used_mb", max),
+        "rss_max": agg("proc_rss_mb", max), "retrans_max": agg("tcp_retrans_pct", max),
+    }
+
+
 def build_report(env, note=None):
     root = env.get("ROOT", "/data/acrec")
     stale_min = float(env.get("STALE_MIN", "5"))
@@ -110,6 +151,33 @@ def build_report(env, note=None):
             lines.append(f"last error          {hb['last_error']}")
             problems.append(f"last error: {hb['last_error']}")
         problems += [f"heartbeat warning: {w}" for w in hb.get("warnings", [])]
+
+    hours = float(env.get("STATS_HOURS", "6"))
+    st = stats_summary(root, hours, now)
+    lines.append("")
+    if st is None:
+        lines.append(f"Last {hours:g} h: no stats.csv rows yet")
+    else:
+        fmt = lambda v, f="{:.1f}": "-" if v is None else f.format(v)
+        lines.append(f"Last {hours:g} h ({st['rows']} one-minute rows of stats.csv):")
+        lines.append("  msgs/s avg (min):")
+        for g in st["msgs_avg"]:
+            lines.append(f"    {g:7s} {fmt(st['msgs_avg'][g], '{:.0f}'):>6s} ({fmt(st['msgs_min'][g], '{:.0f}')})")
+        lines.append(f"  dropped {st['dropped']:.0f}, disconnects {st['disconnects']:.0f}, stalls {st['stalls']:.0f}, "
+                     f"parse errors {st['parse_errors']:.0f}")
+        lines.append(f"  writer queue peak {st['queue_fill_max']:.0f}/{st['queue_capacity']:.0f}, slowest flush {st['flush_ms_max']:.0f} ms")
+        lines.append(f"  recorder CPU max {fmt(st['proc_cpu_max'])}%, memory max {fmt(st['rss_max'], '{:.0f}')} MB")
+        lines.append(f"  host CPU steal max {fmt(st['steal_max'])}%, disk iowait max {fmt(st['iowait_max'])}%")
+        lines.append(f"  RAM free min {fmt(st['mem_avail_min'], '{:.0f}')} MB, swap used max {fmt(st['swap_used_max'], '{:.0f}')} MB")
+        lines.append(f"  TCP retransmits max {fmt(st['retrans_max'], '{:.2f}')}%")
+        if st["dropped"] > 0:
+            problems.append(f"{st['dropped']:.0f} records dropped in the last {hours:g} h (writer queue full)")
+        if st["queue_capacity"] and st["queue_fill_max"] > st["queue_capacity"] / 2:
+            problems.append(f"writer queue peaked at {st['queue_fill_max']:.0f}/{st['queue_capacity']:.0f}: the machine is close to falling behind")
+        if st["stalls"] > 0 or st["disconnects"] > 6:
+            problems.append(f"{st['disconnects']:.0f} disconnects and {st['stalls']:.0f} stalls in the last {hours:g} h (see gaps.csv)")
+        if st["flush_ms_max"] > 5000:
+            problems.append(f"a disk flush took {st['flush_ms_max']:.0f} ms: the disk is slow")
 
     lines.append("")
     if up is None:

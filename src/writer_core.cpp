@@ -1,5 +1,7 @@
 #include "recorder/writer_core.hpp"
 
+#include <algorithm>
+
 #include "recorder/timeutil.hpp"
 
 namespace acrec {
@@ -140,7 +142,9 @@ void WriterCore::backpressure(Group g, uint64_t dropped, uint64_t first_E_ms, ui
 void WriterCore::tick(int64_t mono_ms) {
   if (last_frame_mono_ < 0) last_frame_mono_ = mono_ms;
   if (mono_ms - last_frame_mono_ >= opt_.frame_interval_s * 1000LL) {
+    const int64_t t0 = monotonic_ms();
     storage_.end_frames();
+    stats_.flush_ms_max = std::max(stats_.flush_ms_max, monotonic_ms() - t0);
     last_frame_mono_ = mono_ms;
   }
   // Exchange time drives day closing, so a quiet feed never closes a day early.

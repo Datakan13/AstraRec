@@ -21,6 +21,7 @@
 #include "recorder/records.hpp"
 #include "recorder/sink.hpp"
 #include "recorder/symbols.hpp"
+#include "recorder/sysstats.hpp"
 #include "recorder/transport.hpp"
 
 namespace acrec {
@@ -36,6 +37,8 @@ class Clock {
 struct WriterStatus {
   uint64_t gaps_today = 0, bytes_today = 0;
   size_t queue_fill = 0, queue_capacity = 0;
+  size_t queue_fill_max = 0;     // peak fill since the last stats row
+  int64_t flush_ms_max = 0;      // slowest frame flush + fsync since the last stats row
   std::string last_error;
 };
 
@@ -56,6 +59,10 @@ class Recorder {
   // heartbeat.json content: counts, rates and states only, never prices.
   std::string heartbeat_json(const WriterStatus& ws, double disk_free_gb);
   std::vector<std::string> warnings(double disk_free_gb);
+  // Appends one row to <day>/stats.csv: throughput, connections, drops and
+  // errors since the previous row, plus writer and machine health. Counts only.
+  void write_stats(const WriterStatus& ws, double disk_free_gb, const SysRates& sys);
+  static std::string stats_header();
 
   // Introspection for tests.
   struct ShardView {
@@ -146,6 +153,10 @@ class Recorder {
   std::array<std::atomic<uint64_t>, kGroupCount> dropped_{}, drop_first_E_{}, drop_last_E_{};
   std::array<uint64_t, kGroupCount> hb_records_{};
   std::array<uint64_t, kGroupCount> dropped_total_{};
+  // stats.csv: values at the previous row, and events since it
+  std::array<uint64_t, kGroupCount> st_records_{}, st_dropped_{};
+  int64_t st_last_mono_ = 0;
+  uint64_t st_disconnects_ = 0, st_stalls_ = 0, st_parse_errors_ = 0, st_reconnects_ = 0;
   std::mutex err_mu_;
   std::string last_error_;
 };

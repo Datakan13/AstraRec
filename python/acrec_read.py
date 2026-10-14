@@ -3,6 +3,7 @@
     import acrec_read as ar
     df = ar.read("2026-11-01/trades.000.bin.zst")            # meta.json found next to the file
     df = ar.read_day("/data/acrec/2026-11-01", "bbo")         # every segment of a day, incl. .crash
+    st = ar.read_stats("/data/acrec/2026-11-01")              # per-minute health (stats.csv)
 
 Works on *.crash.bin.zst too: every complete zstd frame is decoded (each is
 checksummed); a frame cut short by a crash is dropped.
@@ -178,6 +179,14 @@ def read_day(day_dir: str, group: str) -> pd.DataFrame:
     if not parts:
         return _frame(group, np.zeros(0, dtype=DTYPES[group]), meta)
     return pd.concat(parts, ignore_index=True)
+
+
+def read_stats(day_dir: str) -> pd.DataFrame:
+    """<day>/stats.csv (one row per minute of recorder and machine health) as a
+    DataFrame indexed by UTC time. Empty cells (unknown) become NaN."""
+    df = pd.read_csv(os.path.join(day_dir, "stats.csv"))
+    df["utc_time"] = pd.to_datetime(df["utc_time"], utc=True)
+    return df.set_index("utc_time")
 
 
 def _summary(path: str) -> str:

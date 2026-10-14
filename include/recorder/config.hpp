@@ -30,6 +30,7 @@ struct RecorderConfig {
   int reconnect_max_s = 60;
   int day_close_grace_s = 120;
   int heartbeat_interval_s = 10;
+  int stats_interval_s = 60;               // one row of <day>/stats.csv this often (0 = off)
   double min_disk_free_gb = 20;
   int group_stall_warn_s = 300;
   std::string rest_host = "fapi.binance.com";

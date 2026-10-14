@@ -57,7 +57,8 @@ add_library(recorder_core STATIC
   src/writer_core.cpp
   src/config.cpp
   src/logger.cpp
-  src/recorder.cpp)
+  src/recorder.cpp
+  src/sysstats.cpp)
 target_include_directories(recorder_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${HAR_ASTRACONNECT_DIR}/include)   # <AstraLib/...> (vendored)

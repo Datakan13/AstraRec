@@ -33,6 +33,7 @@ struct WriterStats {
   uint64_t records[kGroupCount] = {};
   uint64_t gaps = 0;             // seq_gap rows
   uint64_t write_errors = 0;
+  int64_t flush_ms_max = 0;      // slowest frame end + fsync since take_flush_ms_max()
 };
 
 class WriterCore {
@@ -62,6 +63,8 @@ class WriterCore {
 
   Storage& storage() { return storage_; }
   const WriterStats& stats() const { return stats_; }
+  // Slowest frame flush (zstd frame end + fsync of every open file) since the last call.
+  int64_t take_flush_ms_max() { const int64_t m = stats_.flush_ms_max; stats_.flush_ms_max = 0; return m; }
 
  private:
   struct Seq {

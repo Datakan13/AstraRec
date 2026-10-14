@@ -59,7 +59,8 @@ bool load_recorder_config(const std::string& path, RecorderConfig& c, std::strin
       {"depth_refresh_minute_utc", &c.depth_refresh_minute_utc}, {"rotate_after_s", &c.rotate_after_s},
       {"rotate_stagger_s", &c.rotate_stagger_s}, {"rotation_warmup_s", &c.rotation_warmup_s},
       {"reconnect_max_s", &c.reconnect_max_s}, {"day_close_grace_s", &c.day_close_grace_s},
-      {"heartbeat_interval_s", &c.heartbeat_interval_s}, {"group_stall_warn_s", &c.group_stall_warn_s},
+      {"heartbeat_interval_s", &c.heartbeat_interval_s},
+      {"stats_interval_s", &c.stats_interval_s}, {"group_stall_warn_s", &c.group_stall_warn_s},
       {"log_max_mb", &c.log_max_mb}, {"log_files", &c.log_files}};
   struct StrKey { const char* name; std::string* p; };
   const StrKey strs[] = {{"root", &c.root}, {"rest_host", &c.rest_host}, {"ws_host", &c.ws_host},

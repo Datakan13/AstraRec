@@ -344,6 +344,14 @@ void Storage::clock(const ClockRow& c) {
   std::fflush(f);
 }
 
+void Storage::stats(int64_t utc_ms, const std::string& header, const std::string& row) {
+  Day& d = day(day_of_ms(utc_ms));
+  FILE* f = csv(d, d.stats, "stats.csv", header.c_str());
+  if (!f) return;
+  std::fprintf(f, "%s,%s\n", iso_utc_ms(utc_ms).c_str(), row.c_str());
+  std::fflush(f);
+}
+
 void Storage::set_depth_set(std::vector<std::string> symbols) {
   depth_set_ = std::move(symbols);
   for (auto& [_, d] : days_) write_meta(*d);
@@ -373,7 +381,7 @@ bool Storage::end_frames() {
       if (!s->end_frame(err)) { fail(err); ok = false; }
       bytes_[d->day] += s->bytes_out() - before;
     }
-    for (Csv* c : {&d->gaps, &d->events, &d->clock})
+    for (Csv* c : {&d->gaps, &d->events, &d->clock, &d->stats})
       if (c->f) { std::fflush(c->f); ::fsync(fileno(c->f)); }
   }
   return ok;
@@ -388,7 +396,7 @@ void Storage::close_day(Day& d) {
     bytes_[d.day] += s->bytes_out() - before;
     s.reset();
   }
-  for (Csv* c : {&d.gaps, &d.events, &d.clock}) {
+  for (Csv* c : {&d.gaps, &d.events, &d.clock, &d.stats}) {
     if (!c->f) continue;
     std::fflush(c->f);
     ::fsync(fileno(c->f));
