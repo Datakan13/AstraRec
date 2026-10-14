@@ -187,8 +187,19 @@ current server is a **Hetzner Cloud 1 GB, 1 vCPU, 19 GB disk VM in Helsinki**; s
 "Small server" below for what that needs.
 
 1. Build on the server ("Clone only the recorder"). Needs about 1.5 GB of memory for one file, so add swap on small servers.
-2. `sudo useradd -r acrec`, `sudo mkdir -p /opt/acrec /data/acrec`, and `chown acrec /data/acrec`. Copy the `recorder` binary and `deploy/recorder.json` to `/opt/acrec`.
-3. Install `deploy/recorder.service` and run `systemctl enable --now recorder`. It uses `Restart=always`, and SIGTERM stops it cleanly.
+2. `sudo useradd -r -s /usr/sbin/nologin acrec`, `sudo mkdir -p /opt/acrec /data/acrec`, and `chown acrec /data/acrec`. Copy the `recorder` binary and `deploy/recorder.json` to `/opt/acrec`. Leave `/opt/acrec` and the programs in it owned by root: the recorder runs as `acrec` and only needs to read them.
+3. Install `deploy/run_recorder.service` (recorder + hourly upload + status mail) and run `systemctl enable --now run_recorder`. It uses `Restart=always`, and SIGTERM stops it cleanly. `deploy/recorder.service` is the recorder alone, for use with `acrec-upload.timer` instead.
+
+**Security.** `run_recorder.service` runs as the unprivileged user `acrec` inside a systemd sandbox. The service can:
+- write only `/data/acrec` and its own home, `/var/lib/acrec` (created by systemd, used by rclone and Python)
+- read its programs, configs and keys in `/opt/acrec`, but not change them
+
+It can't:
+- see `/root`, `/home` or other users' processes
+- gain privileges or use raw sockets
+- make system calls outside systemd's `@system-service` set
+
+`systemd-analyze security run_recorder` rates it about **1.5/10 exposure ("OK")**; an unhardened service rates about 9.6. Secrets (`storagebox_ed25519`, `rclone.conf`, `smtp_password`) are owned by `acrec` with mode `600`. A systemd *user* instance (`systemctl --user`) would not be safer: user units can use fewer of these protections.
 4. Watch `heartbeat.json`:
    - every enabled group should show `msgs_per_s > 0`
    - `conns_up == conns_total`

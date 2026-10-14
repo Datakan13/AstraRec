@@ -1,5 +1,11 @@
-# Alternative to recorder.service + acrec-upload.timer: one unit running
-# run_recorder.sh (recorder + hourly Storage Box upload). Use one setup or the other.
+# Recorder + hourly Storage Box upload + status mail, in one unit running
+# run_recorder.sh. Alternative to recorder.service + acrec-upload.timer: use one
+# setup or the other.
+#
+# Runs as the unprivileged user acrec inside a systemd sandbox: it can write only
+# /data/acrec (data) and /var/lib/acrec (its home, for rclone and Python), can't
+# see /root or /home, can't change its own program files in /opt/acrec, and can't
+# gain privileges. Check the score with: systemd-analyze security run_recorder
 [Unit]
 Description=Market-data recorder with hourly Storage Box upload
 After=network-online.target
@@ -11,12 +17,44 @@ User=acrec
 WorkingDirectory=/opt/acrec
 Environment=RECORDER=/opt/acrec/recorder CONFIG=/opt/acrec/recorder.json
 Environment=UPLOAD=/opt/acrec/acrec_upload.sh UPLOAD_ENV=/opt/acrec/upload.env
+Environment=MAIL_ENV=/opt/acrec/mail.env
 Environment=RCLONE_CONFIG=/opt/acrec/rclone.conf
+# acrec has no home folder; give rclone/Python a private, writable one.
+StateDirectory=acrec
+Environment=HOME=/var/lib/acrec XDG_CACHE_HOME=/var/lib/acrec/cache
 ExecStart=/opt/acrec/run_recorder.sh
 Restart=always
 RestartSec=5
 KillSignal=SIGTERM
 TimeoutStopSec=90
+UMask=0027
+
+# ---- Sandbox ----
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ReadWritePaths=/data/acrec
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+# Not ProcSubset=pid: stats.csv reads /proc/stat, /proc/meminfo and /proc/net.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
 
 [Install]
 WantedBy=multi-user.target
