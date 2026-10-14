@@ -114,7 +114,9 @@ while (( ! stopping )); do
       log "previous upload still running; skipping this hour"
     else
       log "upload starting"
-      ( "$UPLOAD" "$UPLOAD_ENV"; log "upload finished with code $?" ) &
+      # Lowest CPU and disk priority: on a small server the recorder must always get
+      # the CPU first, or Binance may drop its connections as slow readers.
+      ( nice -n 19 ionice -c 3 "$UPLOAD" "$UPLOAD_ENV"; log "upload finished with code $?" ) &
       upload_pid=$!
     fi
   fi

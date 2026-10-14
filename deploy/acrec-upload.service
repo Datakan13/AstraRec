@@ -12,6 +12,6 @@ ExecStart=/opt/acrec/acrec_upload.sh /opt/acrec/upload.env
 # The Storage Box remote (see recorder/README.md). The acrec user
 # has no home folder, so the config lives next to the binary.
 Environment=RCLONE_CONFIG=/opt/acrec/rclone.conf
-Nice=10
+Nice=19
 IOSchedulingClass=idle
 TimeoutStartSec=6h

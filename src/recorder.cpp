@@ -13,6 +13,8 @@
 namespace acrec {
 namespace {
 
+constexpr int64_t kStableConnMs = 60000;   // a connection up this long resets the retry delay
+
 std::string lower(std::string s) {
   for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   return s;
@@ -232,8 +234,11 @@ void Recorder::check_shard(Shard& s, int64_t now, int64_t utc) {
     gap_rows(s, a.id, "reconnect", "data resumed", s.last_good_E, a.first_E.load(), utc);
     ++st_reconnects_;
     s.reconnecting = false;
-    s.backoff_s = 0;
   }
+  // The retry delay only resets once a connection has stayed up a while: when
+  // Binance keeps cutting fresh connections (as in a burst), retries back off
+  // 1, 2, 4, 8 s instead of hammering it (repeated reconnects can get an IP banned).
+  if (s.backoff_s && !s.reconnecting && now - a.opened_mono >= kStableConnMs) s.backoff_s = 0;
 
   // Stall: no message at all for the shard's threshold.
   const int64_t since = std::max(a.last_msg_mono.load(), a.opened_mono);

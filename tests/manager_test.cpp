@@ -229,6 +229,43 @@ void test_disconnect_reconnect_and_data() {
   CHECK(gaps.find("seq_gap") == std::string::npos);
 }
 
+// Like 2026-10-14 10:04: Binance cuts each fresh connection right after its first
+// data. Retries must back off (1, 2, 4 s ...) instead of resetting to 1 s each time,
+// and reset only once a connection has stayed up for a minute.
+void test_backoff_on_repeated_drops() {
+  World w("backoff");
+  w.begin();
+  uint64_t a = 1;
+  int64_t E = kDay0 + 3600000;
+  auto reconnect_after = [&](int64_t max_ms) -> int64_t {   // ms until a new connection appears
+    const int before = static_cast<int>(w.net.conns.size());
+    for (int64_t t = 0; t <= max_ms; t += 100) {
+      w.clock.advance(100);
+      w.rec->tick();
+      if (static_cast<int>(w.net.conns.size()) > before && w.net.find("btcusdt@aggTrade") >= before) return t + 100;
+    }
+    return -1;
+  };
+  std::vector<int64_t> waits;
+  for (int i = 0; i < 4; ++i) {
+    const int c = w.net.find("btcusdt@aggTrade");
+    w.net.deliver(c, trade("BTCUSDT", a++, E += 1000));
+    w.run(200, 100);                       // "data resumed"
+    w.net.drop(c);                         // ... and cut again right away
+    waits.push_back(reconnect_after(20000));
+  }
+  CHECK(waits.size() == 4 && waits[0] > 0 && waits[0] <= 1600);           // ~1 s
+  CHECK(waits[1] >= 1500 && waits[1] <= 2800);                              // ~2 s
+  CHECK(waits[2] >= 3100 && waits[2] <= 5200);                              // ~4 s
+  CHECK(waits[3] >= 6300 && waits[3] <= 10000);                             // ~8 s
+  // A connection that stays up for a minute resets the delay to ~1 s.
+  const int c = w.net.find("btcusdt@aggTrade");
+  for (int i = 0; i < 61; ++i) { w.net.deliver(c, trade("BTCUSDT", a++, E += 1000)); w.run(1000, 500); }
+  w.net.drop(c);
+  const int64_t after_stable = reconnect_after(20000);
+  CHECK(after_stable > 0 && after_stable <= 1600);
+}
+
 void test_stall() {
   World w("stall");
   w.cfg.stall_s[group_index(Group::Mark)] = 60;
@@ -440,6 +477,7 @@ int main() {
   test_layout_and_subscriptions();
   test_disconnect_reconnect_and_data();
   test_stall();
+  test_backoff_on_repeated_drops();
   test_rotation();
   test_listing_delisting();
   test_backpressure();
