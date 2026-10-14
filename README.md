@@ -197,9 +197,8 @@ current server is a **Hetzner Cloud 1 GB, 1 vCPU, 19 GB disk VM in Helsinki**; s
 It can't:
 - see `/root`, `/home` or other users' processes
 - gain privileges or use raw sockets
-- make system calls outside systemd's `@system-service` set
 
-`systemd-analyze security run_recorder` rates it about **1.5/10 exposure ("OK")**; an unhardened service rates about 9.6. Secrets (`storagebox_ed25519`, `rclone.conf`, `smtp_password`) are owned by `acrec` with mode `600`. A systemd *user* instance (`systemctl --user`) would not be safer: user units can use fewer of these protections.
+`systemd-analyze security run_recorder` rates it about **2/10 exposure ("OK")**. There's deliberately no `SystemCallFilter`: on Ubuntu 26.04 it blocks the stat call `tar` uses and breaks uploads; an unhardened service rates about 9.6. Secrets (`storagebox_ed25519`, `rclone.conf`, `smtp_password`) are owned by `acrec` with mode `600`. A systemd *user* instance (`systemctl --user`) would not be safer: user units can use fewer of these protections.
 4. Watch `heartbeat.json`:
    - every enabled group should show `msgs_per_s > 0`
    - `conns_up == conns_total`

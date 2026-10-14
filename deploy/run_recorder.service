@@ -6,6 +6,7 @@
 # /data/acrec (data) and /var/lib/acrec (its home, for rclone and Python), can't
 # see /root or /home, can't change its own program files in /opt/acrec, and can't
 # gain privileges. Check the score with: systemd-analyze security run_recorder
+# (about 2/10 exposure, "OK")
 [Unit]
 Description=Market-data recorder with hourly Storage Box upload
 After=network-online.target
@@ -53,8 +54,9 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 RemoveIPC=yes
 SystemCallArchitectures=native
-SystemCallFilter=@system-service
-SystemCallErrorNumber=EPERM
+# No SystemCallFilter: on Ubuntu 26.04 (systemd 258, glibc 2.42) @system-service
+# blocks the stat call GNU tar uses ("Cannot stat: Function not implemented"),
+# which broke uploads. The other protections above stay.
 
 [Install]
 WantedBy=multi-user.target

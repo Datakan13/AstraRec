@@ -48,6 +48,9 @@ write_status() {   # state, message: for monitoring next to heartbeat.json
     "$(date -u +%FT%TZ)" "$1" "${2//\"/\'}" "$LAST_UPLOAD" "${REMOTE_FREE_GB:-null}" > "$tmp" && mv -f "$tmp" "$STATUS"
 }
 
+# Start from / : the caller's directory may be unreadable for this user (e.g. sudo
+# -u acrec from /root), which makes find complain.
+cd /
 command -v "$RCLONE" >/dev/null || die "rclone not found"
 [[ -d "$ROOT" ]] || die "data root $ROOT missing"
 
@@ -148,11 +151,18 @@ for dir in "$ROOT"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
     rc=("${PIPESTATUS[@]}")
     wait "$md5_pid"
     set -e
-    [[ "${rc[*]}" =~ ^0( 0)*$ ]] || die "$day: upload pipeline failed (exit codes ${rc[*]}); will retry"
+    if ! [[ "${rc[*]}" =~ ^0( 0)*$ ]]; then
+      # rclone may have stored a partial tar: remove it so it doesn't linger on the remote.
+      "$RCLONE" deletefile "$REMOTE/$tarname" >/dev/null 2>&1 || true
+      die "$day: upload pipeline failed (exit codes ${rc[*]}: tar, tee, rclone); will retry"
+    fi
 
     local_md5=$(cat "$WORK/md5")
     remote_md5=$("$RCLONE" md5sum "$REMOTE/$tarname" 2>/dev/null | awk '{print $1}')
-    [[ -n "$local_md5" && "$local_md5" == "$remote_md5" ]] || die "$day: MD5 mismatch for $tarname (local $local_md5, remote ${remote_md5:-none}); will retry"
+    if ! [[ -n "$local_md5" && "$local_md5" == "$remote_md5" ]]; then
+      "$RCLONE" deletefile "$REMOTE/$tarname" >/dev/null 2>&1 || true
+      die "$day: MD5 mismatch for $tarname (local $local_md5, remote ${remote_md5:-none}); removed it, will retry"
+    fi
 
     # Record each verified file (atomically).
     cp "$manifest" "$manifest.tmp"
