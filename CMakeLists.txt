@@ -90,6 +90,13 @@ if(RECORDER_BUILD_LIVE)
     message(FATAL_ERROR "RECORDER_BUILD_LIVE needs HAR_BUILD_LIVE=ON (the AstraConnect target)")
   endif()
   add_library(recorder_live STATIC src/queue_sink.cpp src/astra_transport.cpp)
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    # Boost.Beast/Asio make this one file need ~1.5 GB of compiler memory (GCC 15).
+    # Collecting garbage more often caps it near 1 GB for a few extra seconds,
+    # so 1 GB build servers manage with a little swap.
+    set_source_files_properties(src/astra_transport.cpp PROPERTIES
+      COMPILE_OPTIONS "--param=ggc-min-expand=10;--param=ggc-min-heapsize=32768")
+  endif()
   target_link_libraries(recorder_live PUBLIC recorder_core AstraConnect::AstraConnect)
   add_executable(recorder apps/recorder_main.cpp)
   target_link_libraries(recorder PRIVATE recorder_live)

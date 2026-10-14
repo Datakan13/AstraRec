@@ -178,11 +178,12 @@ The deploy defaults are set for this:
 
 Segments close at :00 and the upload runs at :30. A segment goes up at the first :30 after it closes and is deleted at the next one. So the disk holds about 1.5–2.5 hours of data, roughly 0.5–2 GB, instead of 1–2 days.
 
-**Building:** the biggest file needs about 1.4 GB of compiler memory. With 1 GB RAM, add a 2 GB swap file and build one file at a time:
+**Building:** `astra_transport.cpp` needs about 1.0 GB of compiler memory on GCC 15. That's with the low-memory GCC flags `recorder/CMakeLists.txt` sets for it; without them it's 1.5 GB. A 1 GB server has about 760 MB free, so add a 2 GB swap file **and check it's active** before building, then build one file at a time:
 ```bash
-fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
-echo '/swapfile none swap sw 0 0' >> /etc/fstab
-cmake --build build -j1
+[ -f /swapfile ] || { fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile; }
+swapon /swapfile 2>/dev/null; grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+swapon --show                      # must list /swapfile, or the compiler gets killed
+cmake --build build -j1            # resumes where it stopped; that one file takes a few minutes
 ```
 
 **Watch on the first live run:**
