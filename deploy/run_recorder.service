@@ -53,10 +53,10 @@ RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
 RemoveIPC=yes
-SystemCallArchitectures=native
-# No SystemCallFilter: on Ubuntu 26.04 (systemd 258, glibc 2.42) @system-service
-# blocks the stat call GNU tar uses ("Cannot stat: Function not implemented"),
-# which broke uploads. The other protections above stay.
+# Deliberately NOT set: SystemCallArchitectures=native (and SystemCallFilter).
+# On Ubuntu 26.04 (systemd 258, glibc 2.42) SystemCallArchitectures=native makes
+# GNU tar's stat fail with "Function not implemented", so every upload failed and
+# the disk filled up (2026-10-14..17). Found by removing settings one at a time.
 
 [Install]
 WantedBy=multi-user.target

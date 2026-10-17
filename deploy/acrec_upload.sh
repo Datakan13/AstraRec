@@ -38,7 +38,17 @@ ENV_FILE="${1:-/opt/acrec/upload.env}"
 : "${RCLONE_FLAGS:=--retries 5 --low-level-retries 20 --stats 0 --checkers 2 --transfers 1}"
 
 log() { echo "$(date -u +%FT%TZ) acrec_upload: $*"; }
-die() { log "ERROR: $*"; write_status "error" "$*"; exit 1; }
+die() {
+  log "ERROR: $*"
+  write_status "error" "$*"
+  # Mail at once (if mail is set up): failed uploads mean nothing can be deleted
+  # locally, so the disk fills up within about a day.
+  if [[ -n "${MAIL_ENV:-}" && -f "$MAIL_ENV" ]]; then
+    python3 -I "${MAIL:-$(dirname "$(readlink -f "$0")")/acrec_mail.py}" "$MAIL_ENV" \
+      --note "UPLOAD FAILED: $*" >/dev/null 2>&1 || log "could not send the failure mail"
+  fi
+  exit 1
+}
 
 STATUS="$ROOT/upload_status.json"
 LAST_UPLOAD=""
