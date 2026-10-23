@@ -9,6 +9,8 @@
 #   DEST/incoming/   tars being fetched
 #   DEST/data/       unpacked day folders (same layout as on the server)
 #   DEST/.pulled     tars already fetched, unpacked and verified (copy mode skips them)
+#   DEST/gaps/       <day>_gaps.csv, refreshed every run (the box's gaps/ folder;
+#                    never deleted from the box, it's small)
 #
 # PULL_MODE=copy (default): the box keeps every tar as the archive; each tar is
 #   downloaded once.
@@ -41,6 +43,11 @@ printf '+ /*.tar\n- *\n' >> "$FILTER"
 
 log "fetching new tars from $REMOTE"
 "$RCLONE" copy "$REMOTE" "$DEST/incoming" "${FLAGS[@]}" --filter-from "$FILTER"
+
+if "$RCLONE" lsf --dirs-only "$REMOTE" | grep -qx 'gaps/'; then   # absent until the first upload
+  log "fetching gaps/ from $REMOTE"
+  "$RCLONE" copy "$REMOTE/gaps" "$DEST/gaps" "${FLAGS[@]}" --checksum
+fi
 
 bad=0 ok=0
 # Name order: <day>_000.tar before <day>_001.tar, so later parts overwrite changed files.

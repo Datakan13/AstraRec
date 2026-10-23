@@ -245,6 +245,7 @@ If the Storage Box or the network is down for long, segments pile up locally (ab
 
 ```
 server: recorder -> /data/acrec/<day>/  --acrec_upload.sh (hourly, SFTP)-->  Storage Box: acrec/<day>_000.tar, _001.tar, ...
+                                                                            acrec/gaps/<day>_gaps.csv
 PC:     acrec_pull.sh (as often as you like)  <--copies (or moves), verified--  Storage Box (the archive)
 ```
 
@@ -255,6 +256,7 @@ Transfers use rclone's SFTP backend on the box's port 23, logging in with an SSH
   - **Finished segments at any time,** including today's. With hourly segments, each hour goes up in the run after it ends.
   - **`meta.json` and the CSVs** (`gaps`, `events`, `clock`, `stats`) only once the day is closed (past midnight UTC + 15 min), because they change until then.
   - **Never** a `.part` file that's still being written.
+  - **`gaps.csv` also as a plain file, every run:** it's copied to `acrec/gaps/<day>_gaps.csv` whenever it has changed (MD5-checked; state in `<day>/.gaps_uploaded`), so today's gaps can be seen on the box without waiting for midnight or unpacking a tar. That file is replaced as the day goes on; the final one also goes into the day's tar. If this copy fails, the data upload goes ahead anyway, `upload_status.json` says `warn` and a mail goes out.
 - **One tar per run per day:** new files are streamed straight into rclone as `<day>_000.tar`, then `<day>_001.tar`, and so on, each with its `SHA256SUMS_NNN` inside. No local temp copy is made, and the tar isn't compressed again because the `.bin.zst` files already are. An existing name on the box is never overwritten; the next number is used instead.
 - **Verification:** the MD5 of the bytes sent must equal the MD5 the box computes itself (`md5sum` over SSH), or nothing is recorded and the next hourly run retries.
 - **Late changes:** files that change after upload (a late straggler segment, a rewritten `meta.json`) go up again in the next part.
@@ -270,6 +272,7 @@ Transfers use rclone's SFTP backend on the box's port 23, logging in with an SSH
 - **Default (`PULL_MODE=copy`):** downloads every tar it doesn't have yet. The box keeps everything as the archive. `DEST/.pulled` remembers what's done, so each tar is fetched once.
 - **`PULL_MODE=move`:** also deletes from the box the tars the PC has unpacked and verified. Use it when the box gets full. Nothing is deleted from the box before every file in its tar matched `SHA256SUMS` on the PC.
 - Each tar is unpacked into `DEST/data/` in name order (so a later part replaces files changed since an earlier one) and checked against its `SHA256SUMS_NNN`. A tar is deleted from `DEST/incoming/` only once every file in it verifies.
+- It also copies the box's `gaps/` folder to `DEST/gaps/` (refreshed each run, never deleted from the box).
 - Then read the data with `acrec_read.read_day("DEST/data/2026-11-01", "trades")`.
 
 ### One-time setup

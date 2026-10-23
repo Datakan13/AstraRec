@@ -18,6 +18,11 @@
 #     KEEP_LOCAL_HOURS is deleted and replaced by an empty "<name>.pruned" marker
 #     (the recorder never reuses that segment number). A closed day with every
 #     file verified and older than KEEP_DAYS is deleted entirely.
+#   - gaps: <day>/gaps.csv is also copied every run, as a plain file, to
+#     <REMOTE>/gaps/<day>_gaps.csv. It's replaced while the day is still being
+#     written, so the box always has the latest one without unpacking a tar.
+#     (The final gaps.csv still goes into the day's tar as well.) A failure here
+#     doesn't stop the data upload but is mailed.
 #
 # The data is a sealed holdout: this script never reads or prints contents,
 # only names, sizes and counts. The .bin.zst files are already zstd-compressed,
@@ -41,13 +46,16 @@ log() { echo "$(date -u +%FT%TZ) acrec_upload: $*"; }
 die() {
   log "ERROR: $*"
   write_status "error" "$*"
-  # Mail at once (if mail is set up): failed uploads mean nothing can be deleted
-  # locally, so the disk fills up within about a day.
+  # Mail at once: failed uploads mean nothing can be deleted locally, so the disk
+  # fills up within about a day.
+  mail_note "UPLOAD FAILED: $*"
+  exit 1
+}
+mail_note() {   # mail a one-line note at once (if mail is set up)
   if [[ -n "${MAIL_ENV:-}" && -f "$MAIL_ENV" ]]; then
     python3 -I "${MAIL:-$(dirname "$(readlink -f "$0")")/acrec_mail.py}" "$MAIL_ENV" \
-      --note "UPLOAD FAILED: $*" >/dev/null 2>&1 || log "could not send the failure mail"
+      --note "$1" >/dev/null 2>&1 || log "could not send the mail"
   fi
-  exit 1
 }
 
 STATUS="$ROOT/upload_status.json"
@@ -76,7 +84,29 @@ remote_free_gb() {   # -1 if the remote can't report it
 }
 
 now=$(date -u +%s)
-uploaded=0 pruned=0 segpruned=0 waiting=0
+uploaded=0 pruned=0 segpruned=0 waiting=0 gapsfailed=0
+
+# Copy <day>/gaps.csv to $REMOTE/gaps/<day>_gaps.csv if it changed since the last
+# verified copy (size and mtime in <day>/.gaps_uploaded). A snapshot is sent, so
+# rows the recorder appends meanwhile can't break the MD5 check; they change the
+# mtime and go up next run.
+upload_gaps() {   # dir day
+  local src="$1/gaps.csv" state="$1/.gaps_uploaded" dst="$REMOTE/gaps/$2_gaps.csv" now_state local_md5 remote_md5
+  [[ -f "$src" ]] || return 0
+  now_state=$(stat -c '%s %Y' "$src")
+  [[ "$(cat "$state" 2>/dev/null)" == "$now_state" ]] && return 0
+  cp -- "$src" "$WORK/gaps.csv"
+  local_md5=$(md5sum < "$WORK/gaps.csv" | cut -d' ' -f1)
+  # shellcheck disable=SC2086  # RCLONE_FLAGS is a list of flags
+  if "$RCLONE" copyto $RCLONE_FLAGS "$WORK/gaps.csv" "$dst" &&
+     remote_md5=$("$RCLONE" md5sum "$dst" 2>/dev/null | awk '{print $1}') &&
+     [[ "$local_md5" == "$remote_md5" ]]; then
+    echo "$now_state" > "$state.tmp" && mv -f "$state.tmp" "$state"
+  else
+    log "$2: could not copy gaps.csv to $dst; will retry"
+    gapsfailed=$((gapsfailed + 1))
+  fi
+}
 
 for dir in "$ROOT"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
   [[ -d "$dir" ]] || continue
@@ -95,6 +125,8 @@ for dir in "$ROOT"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
   verified() {   # name size mtime -> true if uploaded and verified unchanged
     awk -v n="$1" -v s="$2" -v m="$3" '$1==n && $2==s && $3==m {found=1} END {exit !found}' "$manifest"
   }
+
+  upload_gaps "$dir" "$day"
 
   # 1. Free disk: segments verified in an earlier run (the manifest as it is now)
   #    and older than KEEP_LOCAL_HOURS. A marker keeps the segment number taken.
@@ -196,5 +228,10 @@ for dir in "$ROOT"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
 done
 
 REMOTE_FREE_GB=$(remote_free_gb)
-log "done: $uploaded uploaded, $segpruned segments and $pruned days deleted locally, $waiting waiting; remote free ${REMOTE_FREE_GB} GB"
-write_status "ok" "$uploaded uploaded, $segpruned segments + $pruned days deleted locally, $waiting waiting"
+log "done: $uploaded uploaded, $segpruned segments and $pruned days deleted locally, $waiting waiting, $gapsfailed gaps.csv copies failed; remote free ${REMOTE_FREE_GB} GB"
+if (( gapsfailed )); then
+  write_status "warn" "$uploaded uploaded, but $gapsfailed gaps.csv copies to $REMOTE/gaps failed (will retry)"
+  mail_note "UPLOAD WARNING: $gapsfailed gaps.csv copies to $REMOTE/gaps failed; data tars are fine; will retry"
+else
+  write_status "ok" "$uploaded uploaded, $segpruned segments + $pruned days deleted locally, $waiting waiting"
+fi
