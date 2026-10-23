@@ -1,14 +1,19 @@
 # AstraConnect / AstraLib additions for the recorder
 
-What the market-data recorder (`recorder/`) needs from AstraConnect and AstraLib,
+> **Status:** A1, A2, B1, B2 and B3 were implemented in AstraConnect `662dbf0`, which
+> is the pinned submodule. This document is kept as the design record. The ARM items
+> (A2, B1) keep AstraConnect portable; the recorder itself runs on an x86_64 Hetzner
+> Cloud VM.
+
+What the market-data recorder needs from AstraConnect and AstraLib,
 and what else turned up along the way. Everything here was checked against
 AstraConnect `b7269ec` and AstraLib `9b41c62` on 2026-10-12. The Binance facts
 were checked live the same day.
 
 The recorder's offline parts already build and pass their tests. The live binary
 (`-DRECORDER_BUILD_LIVE=ON`) is written against the interfaces below and
-compiles once **A1, B2 and B3** exist. **A2 and B1** are needed to run it on the
-Oracle ARM (aarch64) server.
+compiles once **A1, B2 and B3** exist. **A2 and B1** are needed to run it on ARM
+(aarch64) servers.
 
 | # | Change | Blocks |
 |---|---|---|
@@ -21,8 +26,8 @@ Oracle ARM (aarch64) server.
 | B5 | Small fixes: `inline` in a header, HTTP status ignored | hygiene |
 
 Where the recorder uses these:
-- A1: `recorder/src/queue_sink.cpp`
-- B2, B3: `recorder/src/astra_transport.cpp`
+- A1: `src/queue_sink.cpp`
+- B2, B3: `src/astra_transport.cpp`
 
 The recorder's own interface is in `recorder/include/recorder/transport.hpp`.
 
@@ -72,7 +77,7 @@ size_t approxSize() const;
 ## A2. Portable spin pause (AstraLib)
 
 **Why.** `_mm_pause` and `<immintrin.h>` only exist on x86, but the recorder
-runs on an Oracle Ampere (aarch64) server. Futexes (`SYS_futex`) are Linux
+should also run on ARM (aarch64) servers. Futexes (`SYS_futex`) are Linux
 syscalls and work on aarch64 unchanged.
 
 **Interface:**
@@ -233,12 +238,12 @@ Other things worth knowing from the same check:
 
 1. Build with:
    ```bash
-   cmake -S . -B build -DHAR_BUILD_LIVE=ON -DRECORDER_BUILD_LIVE=ON
+   cmake -S . -B build -DRECORDER_BUILD_LIVE=ON
    cmake --build build -j
    ```
-   This compiles `recorder/src/queue_sink.cpp`, `recorder/src/astra_transport.cpp` and `recorder/apps/recorder_main.cpp` against your changes.
+   This compiles `src/queue_sink.cpp`, `src/astra_transport.cpp` and `apps/recorder_main.cpp` against your changes.
 2. Run `ctest --test-dir build` to confirm the offline recorder tests still pass.
 3. Do a short live smoke run: `./build/recorder build/recorder.json` with `root` pointed at a scratch folder.
    - After about a minute, `heartbeat.json` should show every group with `msgs_per_s > 0` and `conns_up == conns_total`.
    - Stop it with Ctrl-C. No `.part` files should remain.
-   - `python3 recorder/python/acrec_read.py <day>/*.bin.zst` prints counts only.
+   - `python3 python/acrec_read.py <day>/*.bin.zst` prints counts only.

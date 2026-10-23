@@ -1,5 +1,5 @@
 // Transport on AstraConnect. Uses the additions specified in
-// recorder/ASTRACONNECT_SPEC.md: AstraConnect::RawWebsocket (B2) and
+// ASTRACONNECT_SPEC.md: AstraConnect::RawWebsocket (B2) and
 // Futures::API::fetchRaw (B3). No API keys: everything recorded is public.
 #include "recorder/astra_transport.hpp"
 

@@ -2,7 +2,7 @@
 // blocking; one writer thread drains it into WriterCore.
 //
 // Needs AtomicRingBuffer::tryEnqueue / tryDequeue / approxSize
-// (recorder/ASTRACONNECT_SPEC.md, section A1).
+// (ASTRACONNECT_SPEC.md, section A1).
 #pragma once
 #include <atomic>
 #include <cstdint>

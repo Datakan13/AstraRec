@@ -1,6 +1,6 @@
 // What the recorder needs from the network. The live implementation
 // (src/astra_transport.cpp) wraps AstraConnect; tests use a fake. The exact
-// AstraConnect additions behind it are in recorder/ASTRACONNECT_SPEC.md.
+// AstraConnect additions behind it are in ASTRACONNECT_SPEC.md.
 #pragma once
 #include <cstdint>
 #include <functional>

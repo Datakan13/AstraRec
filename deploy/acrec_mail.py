@@ -22,7 +22,7 @@ mail.env (KEY=value lines):
   SMTP_USER=you@gmail.com
   SMTP_PASSWORD_FILE=/opt/acrec/smtp_password   (Gmail: an app password, mode 600)
   STALE_MIN=5
-  HOST_LABEL=acrec-tokyo             (optional, shown in the subject)
+  HOST_LABEL=acrec-helsinki          (optional, shown in the subject)
 """
 import argparse
 import json

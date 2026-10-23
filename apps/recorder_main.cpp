@@ -1,5 +1,5 @@
 // recorder: records Binance USD-M futures market data into a sealed forward
-// dataset (see recorder/README.md).
+// dataset (see README.md).
 //
 //   recorder [recorder.json]
 //

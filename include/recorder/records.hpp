@@ -1,5 +1,5 @@
 // On-disk record layouts (little-endian, packed). This file and
-// recorder/python/acrec_read.py are the format contract; change both together.
+// python/acrec_read.py are the format contract; change both together.
 //
 // Units: prices and quantities are int64 in 1e-8 (kPriceDigits), the funding
 // rate in 1e-9. *_ms are exchange milliseconds, recv_ns is local CLOCK_REALTIME.

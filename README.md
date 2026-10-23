@@ -1,14 +1,21 @@
-# Market-data recorder
+# AstraRec
 
-Records Binance USDⓈ-M futures market data into a **sealed forward dataset**: a
-research holdout that nobody browses until it's used. Built on AstraConnect
-(websockets, REST, simdjson) and AstraLib (ring buffer, clock). It implements
-"AstraConnect market-data recorder: implementation spec (v1)", with the
+AstraRec records live Binance USDⓈ-M futures market data (best bid/offer, aggregated
+trades, top-20 order-book depth, liquidations and mark price) for every USDT/USDC
+perpetual contract. It writes the data into a **sealed forward dataset**: a research
+holdout that nobody browses until it's used. It handles about 7–15k messages per
+second on a single shared vCPU, stores zstd-compressed hourly segments with exact
+fixed-point prices, and uploads and verifies each finished hour off-site.
+
+It's built on [AstraConnect](https://github.com/Datakan13/AstraConnect) (websockets,
+REST, simdjson) and AstraLib (ring buffer, clock; vendored in AstraConnect). It
+implements "AstraConnect market-data recorder: implementation spec (v1)", with the
 deviations listed below.
 
-**Status:**
-- **Built and tested:** parser, writer, storage, the connection manager (against a fake transport), the Python reader, and all six acceptance tests from the spec.
-- **Waiting on you:** the live binary (`recorder`) waits for the AstraConnect/AstraLib additions in [ASTRACONNECT_SPEC.md](ASTRACONNECT_SPEC.md).
+**Status:** running 24/7 since 2026-10-14 on a 1 GB Hetzner Cloud VM (Ubuntu 26.04),
+with hourly uploads to a Hetzner Storage Box. The parser, writer, storage, the
+connection manager (against a fake transport), the Python reader and all six
+acceptance tests from the spec are covered by the test suite.
 
 ## Rules it keeps
 
@@ -38,15 +45,15 @@ Other verified facts it relies on:
 ## Layout
 
 ```
-recorder/
-  include/recorder/   records.hpp (format contract), decimal, parser, symbols,
-                      storage, writer_core, sink, transport, recorder, config, ...
-  src/                implementations; queue_sink.cpp + astra_transport.cpp are live-only
-  apps/               acrec_replay.cpp (offline), recorder_main.cpp (live daemon)
-  python/acrec_read.py   reader: *.bin.zst (incl. .crash) -> pandas
-  tests/              recorder_test.cpp, manager_test.cpp, test_roundtrip.py, fixtures/
-  deploy/             recorder.json, recorder.service
-  ASTRACONNECT_SPEC.md   what AstraConnect/AstraLib need for the live binary
+include/recorder/   records.hpp (format contract), decimal, parser, symbols,
+                    storage, writer_core, sink, transport, recorder, config, ...
+src/                implementations; queue_sink.cpp + astra_transport.cpp are live-only
+apps/               acrec_replay.cpp (offline), recorder_main.cpp (live daemon)
+python/acrec_read.py   reader: *.bin.zst (incl. .crash) -> pandas
+tests/              recorder_test.cpp, manager_test.cpp, test_roundtrip.py, fixtures/
+deploy/             recorder.json, systemd units/timers, upload, pull and mail scripts
+external/AstraConnect  submodule (includes AstraLib and simdjson)
+ASTRACONNECT_SPEC.md   what the recorder needed from AstraConnect/AstraLib (implemented in 662dbf0)
 ```
 
 **How data flows:**
@@ -58,12 +65,16 @@ Writer commands such as "overlap ended" travel in the same ring as the records, 
 
 ## Build and test
 
-Needs libzstd ≥ 1.4 (`apt install libzstd-dev`). The tests need Python 3 with
-numpy, pandas and zstandard.
+Needs CMake ≥ 3.22, a C++20 compiler and libzstd ≥ 1.4 (`apt install libzstd-dev`).
+The live binary also needs Boost ≥ 1.74 (headers only) and OpenSSL 3. The tests
+need Python 3 with numpy, pandas and zstandard.
 
 ```bash
+sudo apt install -y git cmake g++ pkg-config libzstd-dev libboost-dev libssl-dev python3-numpy python3-pandas python3-zstandard
+git clone --recurse-submodules https://github.com/Datakan13/AstraRec.git
+cd AstraRec
 cmake -S . -B build && cmake --build build -j
-ctest --test-dir build -R recorder --output-on-failure
+ctest --test-dir build --output-on-failure
 ```
 
 | Test | Covers |
@@ -74,12 +85,14 @@ ctest --test-dir build -R recorder --output-on-failure
 
 The fixtures are made-up values in Binance's live layout (`tests/fixtures/make_fixtures.py`).
 
-**Live binary** (after ASTRACONNECT_SPEC.md A1, B2, B3):
+**Live binary:**
 
 ```bash
-cmake -S . -B build -DHAR_BUILD_LIVE=ON -DRECORDER_BUILD_LIVE=ON && cmake --build build -j
-./build/recorder/recorder build/recorder.json
+cmake -S . -B build -DRECORDER_BUILD_LIVE=ON && cmake --build build -j
+./build/recorder build/recorder.json      # build/recorder.json is a copy of deploy/recorder.json
 ```
+
+Binance refuses US IP addresses (HTTP 451), so the live binary must run from a region Binance serves.
 
 ## Output
 
@@ -148,37 +161,13 @@ The status mail summarizes the last 6 hours of these rows: averages and minimums
 ## Reading
 
 ```python
-import sys; sys.path.insert(0, "recorder/python")
+import sys; sys.path.insert(0, "python")
 import acrec_read as ar
 trades = ar.read_day("/data/acrec/2026-11-01", "trades")   # all segments incl. .crash
 # exact integers: px_e8, qty_e8 ...; floats: px, qty ...; ar.to_decimal(x) for exact values
 ```
 
-`python3 recorder/python/acrec_read.py <files>` prints counts and time ranges only.
-
-## Clone only the recorder
-
-The recorder needs only `recorder/` and the `external/AstraConnect` submodule.
-The repo is private: the server clones it over SSH with the deploy key
-`/root/.ssh/github_deploy` (run as root). AstraConnect is public and comes over
-HTTPS, which matters because a deploy key only works for the repo it's attached to.
-
-```bash
-sudo apt install -y git cmake g++ pkg-config libzstd-dev libboost-system-dev libboost-thread-dev libssl-dev python3-numpy python3-pandas python3-zstandard
-chmod 600 /root/.ssh/github_deploy
-export GIT_SSH_COMMAND='ssh -i /root/.ssh/github_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new'
-git clone --filter=blob:none --sparse git@github.com:Datakan13/Forecasting.git acrec
-cd acrec
-git config core.sshCommand "$GIT_SSH_COMMAND"     # later pulls use the key too
-git sparse-checkout set recorder external
-git submodule update --init --depth 1 external/AstraConnect
-cmake -S recorder -B build -DRECORDER_BUILD_LIVE=ON
-cmake --build build -j
-ctest --test-dir build --output-on-failure
-```
-
-Results: `build/recorder` and `build/recorder.json` (a copy of `deploy/recorder.json`).
-Update later with `git pull && git submodule update --init --depth 1 external/AstraConnect`.
+`python3 python/acrec_read.py <files>` prints counts and time ranges only.
 
 ## Deployment
 
@@ -186,7 +175,7 @@ Runs on any Linux server in a region Binance serves (US IPs get HTTP 451). The
 current server is a **Hetzner Cloud 1 GB, 1 vCPU, 19 GB disk VM in Helsinki**; see
 "Small server" below for what that needs.
 
-1. Build on the server ("Clone only the recorder"). Needs about 1.5 GB of memory for one file, so add swap on small servers.
+1. Build on the server with `-DRECORDER_BUILD_LIVE=ON` ("Build and test"). One file needs about 1.5 GB of compiler memory, so add swap on small servers. Update later with `git pull && git submodule update --init external/AstraConnect`, rebuild, then `install -m 755` the binary (a plain `cp` over a running binary fails with "Text file busy").
 2. `sudo useradd -r -s /usr/sbin/nologin acrec`, `sudo mkdir -p /opt/acrec /data/acrec`, and `chown acrec /data/acrec`. Copy the `recorder` binary and `deploy/recorder.json` to `/opt/acrec`. Leave `/opt/acrec` and the programs in it owned by root: the recorder runs as `acrec` and only needs to read them.
 3. Install `deploy/run_recorder.service` (recorder + hourly upload + status mail) and run `systemctl enable --now run_recorder`. It uses `Restart=always`, and SIGTERM stops it cleanly. `deploy/recorder.service` is the recorder alone, for use with `acrec-upload.timer` instead.
 
@@ -198,7 +187,7 @@ It can't:
 - see `/root`, `/home` or other users' processes
 - gain privileges or use raw sockets
 
-`systemd-analyze security run_recorder` rates it about **2/10 exposure ("OK")**. There's deliberately no `SystemCallFilter`: on Ubuntu 26.04 it blocks the stat call `tar` uses and breaks uploads; an unhardened service rates about 9.6. Secrets (`storagebox_ed25519`, `rclone.conf`, `smtp_password`) are owned by `acrec` with mode `600`. A systemd *user* instance (`systemctl --user`) would not be safer: user units can use fewer of these protections.
+`systemd-analyze security run_recorder` rates it about **2/10 exposure ("OK")**. It deliberately leaves out `SystemCallArchitectures=native` (and `SystemCallFilter`): on Ubuntu 26.04 (systemd 258, glibc 2.42) that setting makes `tar`'s stat call fail with "Function not implemented", which broke every upload in October 2026 until it was found by removing sandbox settings one at a time. An unhardened service rates about 9.6. Secrets (`storagebox_ed25519`, `rclone.conf`, `smtp_password`) are owned by `acrec` with mode `600`. A systemd *user* instance (`systemctl --user`) would not be safer: user units can use fewer of these protections.
 4. Watch `heartbeat.json`:
    - every enabled group should show `msgs_per_s > 0`
    - `conns_up == conns_total`
@@ -227,7 +216,7 @@ The deploy defaults are set for this:
 
 Segments close at :00 and the upload runs at :30. A segment goes up at the first :30 after it closes and is deleted at the next one. So the disk holds about 1.5–2.5 hours of data, roughly 0.5–2 GB, instead of 1–2 days.
 
-**Building:** `astra_transport.cpp` needs about 1.0 GB of compiler memory on GCC 15. That's with the low-memory GCC flags `recorder/CMakeLists.txt` sets for it; without them it's 1.5 GB. A 1 GB server has about 760 MB free, so add a 2 GB swap file **and check it's active** before building, then build one file at a time:
+**Building:** `astra_transport.cpp` needs about 1.0 GB of compiler memory on GCC 15. That's with the low-memory GCC flags `CMakeLists.txt` sets for it; without them it's 1.5 GB. A 1 GB server has about 760 MB free, so add a 2 GB swap file **and check it's active** before building, then build one file at a time:
 ```bash
 [ -f /swapfile ] || { fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile; }
 swapon /swapfile 2>/dev/null; grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
@@ -349,3 +338,13 @@ The report shows, for each group, messages/s, connections up, seconds quiet and 
    - **With `recorder.service`:** install `deploy/acrec-mail.service` and `deploy/acrec-mail.timer`, then `systemctl enable --now acrec-mail.timer`.
 
 Hetzner Cloud blocks outgoing ports 25 and 465 on new servers, so keep port 587 with `SMTP_TLS=starttls` (the default). Another provider works too: set `SMTP_HOST`, `SMTP_PORT` and `SMTP_TLS`.
+
+## License
+
+Copyright (C) 2026 Atakan Burak Bacanlı.
+
+AstraRec is free software under the [GNU Affero General Public License v3.0](LICENSE).
+You may use, study, change and share it. If you distribute it, or run a modified
+version that others use over a network, you must publish your source under the
+same license. The libraries it builds on, AstraConnect and AstraLib, stay under
+Apache-2.0.

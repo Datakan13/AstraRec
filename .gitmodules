@@ -1,0 +1,3 @@
+[submodule "external/AstraConnect"]
+	path = external/AstraConnect
+	url = https://github.com/Datakan13/AstraConnect.git

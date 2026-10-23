@@ -9,10 +9,10 @@ Wants=network-online.target
 Type=oneshot
 User=acrec
 ExecStart=/opt/acrec/acrec_upload.sh /opt/acrec/upload.env
-# The Storage Box remote (see recorder/README.md). The acrec user
+# The Storage Box remote (see README.md). The acrec user
 # has no home folder, so the config lives next to the binary.
 Environment=RCLONE_CONFIG=/opt/acrec/rclone.conf
-# A failed upload sends a mail right away (needs mail.env; see recorder/README.md).
+# A failed upload sends a mail right away (needs mail.env; see README.md).
 Environment=MAIL_ENV=/opt/acrec/mail.env MAIL=/opt/acrec/acrec_mail.py
 Nice=19
 IOSchedulingClass=idle
