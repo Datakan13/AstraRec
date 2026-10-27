@@ -339,6 +339,12 @@ The report shows, for each group, messages/s, connections up, seconds quiet and 
 
 Hetzner Cloud blocks outgoing ports 25 and 465 on new servers, so keep port 587 with `SMTP_TLS=starttls` (the default). Another provider works too: set `SMTP_HOST`, `SMTP_PORT` and `SMTP_TLS`.
 
+## Notes
+
+Most of the code, tests and documentation were written by AI, directed and reviewed
+by the creator. The deployment, which means setting up and running the recorder on the production
+server and the Storage Box, was largely done by the creator.
+
 ## License
 
 Copyright (C) 2026 Atakan Burak Bacanlı.
