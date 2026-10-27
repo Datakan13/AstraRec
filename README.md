@@ -341,8 +341,10 @@ Hetzner Cloud blocks outgoing ports 25 and 465 on new servers, so keep port 587 
 
 ## Notes
 
-Most of the code, tests and documentation were written by AI, directed and reviewed
-by the creator. The deployment, which means setting up and running the recorder on the production
+The design is the creator's: the storage format, file layout, segmenting and
+upload scheme were the creator's choices. Most of the code, tests and documentation
+implementing that design were written by AI, directed and reviewed by the creator.
+The deployment, which means setting up and running the recorder on the production
 server and the Storage Box, was largely done by the creator.
 
 ## License
